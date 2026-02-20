@@ -136,6 +136,9 @@ export function useOpenAIProvider(
         try {
           const { MicVAD } = await import("@ricky0123/vad-web");
           const vad = await MicVAD.new({
+            // Serve VAD assets from public/ directory at root
+            baseAssetPath: "/",
+            onnxWASMBasePath: "/",
             // Force single-threaded WASM — mobile Safari lacks SharedArrayBuffer
             ortConfig: (ort) => { ort.env.wasm.numThreads = 1; },
             getStream: async () => stream,
