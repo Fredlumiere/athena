@@ -62,8 +62,21 @@ export function useElevenLabsProvider(
 
     try {
       // Request mic permission
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((t) => t.stop());
+      cbRef.current.onMessage({ role: "event", text: "Requesting microphone..." });
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+        cbRef.current.onMessage({ role: "event", text: "Mic granted. Connecting to ElevenLabs..." });
+      } catch (micErr) {
+        const name = micErr instanceof Error ? micErr.name : "";
+        if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+          cbRef.current.onError("Mic permission denied. Check Settings → Safari → Microphone.");
+        } else {
+          cbRef.current.onError(`Mic error: ${micErr instanceof Error ? micErr.message : String(micErr)}`);
+        }
+        cbRef.current.onStatusChange("disconnected");
+        return;
+      }
 
       await conversation.startSession({
         agentId,

@@ -93,18 +93,36 @@ export function useOpenAIProvider(
     cbRef.current.onStatusChange("connecting");
 
     try {
-      // Request mic
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Request mic — log each step for mobile debugging
+      cbRef.current.onMessage({ role: "event", text: "Requesting microphone..." });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (micErr) {
+        const name = micErr instanceof Error ? micErr.name : "";
+        if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+          cbRef.current.onError("Mic permission denied. Check Settings → Safari → Microphone.");
+        } else {
+          cbRef.current.onError(`Mic error: ${micErr instanceof Error ? micErr.message : String(micErr)}`);
+        }
+        setStatus("disconnected");
+        cbRef.current.onStatusChange("disconnected");
+        return;
+      }
       streamRef.current = stream;
+      const tracks = stream.getAudioTracks();
+      cbRef.current.onMessage({ role: "event", text: `Mic ready (${tracks.length} track, ${tracks[0]?.enabled ? "enabled" : "disabled"})` });
 
       // Create AudioContext for playback — must resume on iOS Safari
       const ctx = new AudioContext({ sampleRate: 24000 });
       if (ctx.state === "suspended") await ctx.resume();
       audioContextRef.current = ctx;
+      cbRef.current.onMessage({ role: "event", text: `Audio: ${ctx.state}, ${ctx.sampleRate}Hz` });
 
       // Connect WebSocket with auth token
       const wsBase = bridgeUrl.replace(/^http/, "ws") + "/ws/voice";
       const wsUrl = bridgeToken ? `${wsBase}?token=${encodeURIComponent(bridgeToken)}` : wsBase;
+      cbRef.current.onMessage({ role: "event", text: `Connecting to bridge...` });
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -112,6 +130,7 @@ export function useOpenAIProvider(
         setStatus("connected");
         cbRef.current.onStatusChange("connected");
         isConnectedRef.current = true;
+        cbRef.current.onMessage({ role: "event", text: "WebSocket connected. Loading VAD..." });
 
         // Initialize VAD after WebSocket is ready
         try {
@@ -127,7 +146,7 @@ export function useOpenAIProvider(
             redemptionMs: 800,
             onSpeechStart: () => {
               // Visual feedback that mic is picking up speech
-              cbRef.current.onMessage({ role: "event", text: "Listening..." });
+              cbRef.current.onMessage({ role: "event", text: "Speech detected..." });
             },
             onSpeechEnd: (audio: Float32Array) => {
               if (!isConnectedRef.current) return;
@@ -154,9 +173,10 @@ export function useOpenAIProvider(
           });
           vadRef.current = vad;
           vad.start();
+          cbRef.current.onMessage({ role: "event", text: "VAD ready — speak now!" });
         } catch (err) {
           console.error("[OpenAI] VAD init error:", err);
-          cbRef.current.onError("Voice activity detection failed to initialize");
+          cbRef.current.onError(`VAD failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       };
 
