@@ -97,8 +97,9 @@ export function useOpenAIProvider(
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      // Create AudioContext for playback
+      // Create AudioContext for playback — must resume on iOS Safari
       const ctx = new AudioContext({ sampleRate: 24000 });
+      if (ctx.state === "suspended") await ctx.resume();
       audioContextRef.current = ctx;
 
       // Connect WebSocket with auth token
@@ -119,11 +120,15 @@ export function useOpenAIProvider(
             // Force single-threaded WASM — mobile Safari lacks SharedArrayBuffer
             ortConfig: (ort) => { ort.env.wasm.numThreads = 1; },
             getStream: async () => stream,
-            positiveSpeechThreshold: 0.8,
+            positiveSpeechThreshold: 0.6,
             negativeSpeechThreshold: 0.3,
-            minSpeechMs: 250,
+            minSpeechMs: 200,
             preSpeechPadMs: 500,
-            redemptionMs: 600,
+            redemptionMs: 800,
+            onSpeechStart: () => {
+              // Visual feedback that mic is picking up speech
+              cbRef.current.onMessage({ role: "event", text: "Listening..." });
+            },
             onSpeechEnd: (audio: Float32Array) => {
               if (!isConnectedRef.current) return;
               if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -203,10 +208,24 @@ export function useOpenAIProvider(
       };
 
       ws.onclose = () => {
-        isConnectedRef.current = false;
-        setStatus("disconnected");
-        cbRef.current.onStatusChange("disconnected");
-        cleanup();
+        if (isConnectedRef.current) {
+          // Unexpected disconnect — try to reconnect
+          isConnectedRef.current = false;
+          cbRef.current.onMessage({ role: "event", text: "Connection lost. Reconnecting..." });
+          setStatus("connecting");
+          cbRef.current.onStatusChange("connecting");
+          cleanup();
+          // Reconnect after a short delay
+          setTimeout(() => {
+            if (!isConnectedRef.current && wsRef.current === null) {
+              connect();
+            }
+          }, 2000);
+        } else {
+          setStatus("disconnected");
+          cbRef.current.onStatusChange("disconnected");
+          cleanup();
+        }
       };
 
       ws.onerror = () => {
