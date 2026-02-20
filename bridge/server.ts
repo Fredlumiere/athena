@@ -6,26 +6,90 @@ process.on("unhandledRejection", (err) => {
 });
 
 import express from "express";
+import { createServer } from "http";
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { WebSocketServer, WebSocket } from "ws";
+import OpenAI from "openai";
+import fs from "fs";
+import path from "path";
+import os from "os";
 
 const app = express();
 app.use(express.json());
 
-// Simple bearer token auth (optional, set BRIDGE_API_KEY to enable)
-const BRIDGE_API_KEY = process.env.BRIDGE_API_KEY;
-if (BRIDGE_API_KEY) {
-  app.use("/v1", (req, res, next) => {
-    const auth = req.headers.authorization;
-    if (!auth || auth !== `Bearer ${BRIDGE_API_KEY}`) {
-      res.status(401).json({ error: "unauthorized" });
-      return;
-    }
-    next();
-  });
+// CORS — restricted to frontend origin
+const ALLOWED_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:3000";
+app.use((_req, res, next) => {
+  res.header("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  if (_req.method === "OPTIONS") {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
+
+// Auth token — required for all /v1 and WS endpoints
+const BRIDGE_AUTH_TOKEN = process.env.BRIDGE_AUTH_TOKEN || process.env.BRIDGE_API_KEY || "";
+
+function checkAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!BRIDGE_AUTH_TOKEN) { next(); return; }
+  const auth = req.headers.authorization;
+  if (!auth || auth !== `Bearer ${BRIDGE_AUTH_TOKEN}`) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  next();
 }
+app.use("/v1", checkAuth);
 
 // Session tracking: map conversation to Agent SDK session
 const sessions = new Map<string, string>(); // conversationId -> sessionId
+
+// Per-connection state is now managed inside each WS connection handler
+// and via the sessions Map for HTTP. No more global activeSessionId.
+
+// ─── Runtime Shape Checks ────────────────────────────────────────────────────
+
+function getSessionId(message: SDKMessage): string | null {
+  if ("session_id" in message && typeof (message as Record<string, unknown>).session_id === "string") {
+    return (message as Record<string, unknown>).session_id as string;
+  }
+  return null;
+}
+
+interface ContentBlock {
+  type: string;
+  text?: string;
+}
+
+function getAssistantContent(message: SDKMessage): ContentBlock[] | null {
+  if (message.type !== "assistant") return null;
+  const msg = message as Record<string, unknown>;
+  const inner = msg.message as Record<string, unknown> | undefined;
+  if (!inner || !Array.isArray(inner.content)) return null;
+  return inner.content as ContentBlock[];
+}
+
+function getResultText(message: SDKMessage): string | null {
+  if (message.type !== "result") return null;
+  const msg = message as Record<string, unknown>;
+  if (msg.subtype === "success" && typeof msg.result === "string") {
+    return msg.result;
+  }
+  return null;
+}
+
+function getStreamDeltaText(message: SDKMessage): string | null {
+  if (message.type !== "stream_event") return null;
+  const msg = message as Record<string, unknown>;
+  const event = msg.event as Record<string, unknown> | undefined;
+  if (!event || event.type !== "content_block_delta") return null;
+  const delta = event.delta as Record<string, unknown> | undefined;
+  if (!delta || delta.type !== "text_delta" || typeof delta.text !== "string") return null;
+  return delta.text;
+}
 
 const SYSTEM_PROMPT = `You are Athena, an elite AI executive assistant. You speak in a warm, confident, concise voice. You have full access to the codebase and development tools.
 
@@ -38,6 +102,425 @@ Key behaviors:
 - Never say "I'll help you with that" or similar filler. Just do it.
 
 You are the founder's right hand. He calls you Athena. Be sharp, capable, and concise.`;
+
+// ─── Session Scanner ─────────────────────────────────────────────────────────
+
+interface SessionInfo {
+  id: string;
+  project: string;
+  cwd: string;
+  lastMessage: string;
+  timestamp: number;
+}
+
+// Cache for session scanning
+let sessionCache: { sessions: SessionInfo[]; timestamp: number } | null = null;
+const SESSION_CACHE_TTL = 10_000; // 10 seconds
+
+function readFileTail(filePath: string, bytes: number = 8192): string {
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const stat = fs.fstatSync(fd);
+    const readSize = Math.min(bytes, stat.size);
+    const buffer = Buffer.alloc(readSize);
+    fs.readSync(fd, buffer, 0, readSize, stat.size - readSize);
+    return buffer.toString("utf-8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function readFileHead(filePath: string, bytes: number = 2048): string {
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const stat = fs.fstatSync(fd);
+    const readSize = Math.min(bytes, stat.size);
+    const buffer = Buffer.alloc(readSize);
+    fs.readSync(fd, buffer, 0, readSize, 0);
+    return buffer.toString("utf-8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// Set of valid session IDs (populated by scan, used for validation)
+const knownSessionIds = new Set<string>();
+const knownSessionCwds = new Map<string, string>(); // sessionId -> cwd
+
+function scanSessions(): SessionInfo[] {
+  // Return cache if fresh
+  if (sessionCache && Date.now() - sessionCache.timestamp < SESSION_CACHE_TTL) {
+    return sessionCache.sessions;
+  }
+
+  const claudeDir = path.join(os.homedir(), ".claude", "projects");
+  const results: SessionInfo[] = [];
+  knownSessionIds.clear();
+  knownSessionCwds.clear();
+
+  if (!fs.existsSync(claudeDir)) return results;
+
+  const MAX_DEPTH = 5;
+
+  function walkDir(dir: string, depth: number) {
+    if (depth > MAX_DEPTH) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      // Skip symlinks to prevent traversal
+      if (entry.isSymbolicLink()) continue;
+
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walkDir(fullPath, depth + 1);
+      } else if (entry.name.endsWith(".jsonl")) {
+        try {
+          const stat = fs.statSync(fullPath);
+          const sessionId = entry.name.replace(".jsonl", "");
+
+          // Read only tail of file (last ~8KB) for recent messages
+          const tailContent = readFileTail(fullPath);
+          const tailLines = tailContent.split("\n").filter(Boolean);
+
+          let lastMessage = "";
+          let cwd = "";
+          const projectPath = path.relative(claudeDir, dir);
+
+          // Parse tail lines to find useful info
+          for (let i = tailLines.length - 1; i >= 0; i--) {
+            try {
+              const parsed = JSON.parse(tailLines[i]);
+              if (!lastMessage && parsed.type === "human" && typeof parsed.message === "string") {
+                lastMessage = parsed.message.slice(0, 120);
+              }
+              if (!cwd && parsed.cwd) {
+                cwd = parsed.cwd;
+              }
+              if (lastMessage && cwd) break;
+            } catch {
+              // skip malformed lines (first line of tail may be partial)
+            }
+          }
+
+          // If no cwd in tail, check head
+          if (!cwd) {
+            const headContent = readFileHead(fullPath);
+            const headLines = headContent.split("\n").filter(Boolean);
+            for (const line of headLines) {
+              try {
+                const parsed = JSON.parse(line);
+                if (parsed.cwd) { cwd = parsed.cwd; break; }
+              } catch { /* skip */ }
+            }
+          }
+
+          knownSessionIds.add(sessionId);
+          if (cwd) knownSessionCwds.set(sessionId, cwd);
+
+          results.push({
+            id: sessionId,
+            project: projectPath,
+            cwd: cwd || "unknown",
+            lastMessage: lastMessage || "(no messages)",
+            timestamp: stat.mtimeMs,
+          });
+        } catch {
+          // skip unreadable files
+        }
+      }
+    }
+  }
+
+  walkDir(claudeDir, 0);
+
+  // Sort by most recent first
+  results.sort((a, b) => b.timestamp - a.timestamp);
+
+  sessionCache = { sessions: results, timestamp: Date.now() };
+  return results;
+}
+
+// ─── Routes ──────────────────────────────────────────────────────────────────
+
+app.get("/v1/sessions", (_req, res) => {
+  const allSessions = scanSessions();
+  // Return top 50 to avoid overwhelming the UI
+  res.json({ sessions: allSessions.slice(0, 50) });
+});
+
+app.post("/v1/session/select", (req, res) => {
+  const { sessionId, cwd } = req.body;
+  if (!sessionId || typeof sessionId !== "string") {
+    res.status(400).json({ error: "sessionId required" });
+    return;
+  }
+
+  // Validate sessionId format (UUID) and existence
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidPattern.test(sessionId)) {
+    res.status(400).json({ error: "invalid sessionId format" });
+    return;
+  }
+
+  // Ensure scan has run at least once
+  if (knownSessionIds.size === 0) scanSessions();
+
+  if (knownSessionIds.size > 0 && !knownSessionIds.has(sessionId)) {
+    res.status(404).json({ error: "session not found" });
+    return;
+  }
+
+  // Validate cwd: must match the known cwd for this session, or use the known one
+  const validCwd = knownSessionCwds.get(sessionId) || process.env.ATHENA_CWD || process.cwd();
+  const resolvedCwd = (cwd && knownSessionCwds.get(sessionId) === cwd) ? cwd : validCwd;
+
+  sessions.set("default", sessionId);
+  // Store cwd keyed to session for per-connection lookup
+  knownSessionCwds.set(sessionId, resolvedCwd);
+
+  console.log(`[bridge] Session selected: ${sessionId} (cwd: ${resolvedCwd})`);
+  res.json({ ok: true, sessionId, cwd: resolvedCwd });
+});
+
+// ─── OpenAI Voice Pipeline (WebSocket) ───────────────────────────────────────
+
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  : null;
+
+function setupWebSocket(server: ReturnType<typeof createServer>) {
+  const wss = new WebSocketServer({
+    server,
+    path: "/ws/voice",
+    verifyClient: (info, cb) => {
+      if (!BRIDGE_AUTH_TOKEN) { cb(true); return; }
+      // Check token in query param: ws://host/ws/voice?token=xxx
+      const url = new URL(info.req.url || "", `http://${info.req.headers.host}`);
+      const token = url.searchParams.get("token");
+      if (token === BRIDGE_AUTH_TOKEN) {
+        cb(true);
+      } else {
+        cb(false, 401, "Unauthorized");
+      }
+    },
+  });
+
+  wss.on("connection", (ws: WebSocket, req) => {
+    console.log("[ws/voice] Client connected");
+
+    // Per-connection session state
+    const url = new URL(req.url || "", `http://${req.headers.host}`);
+    let connSessionId = url.searchParams.get("sessionId") || sessions.get("default") || null;
+    let connSessionCwd = connSessionId ? (knownSessionCwds.get(connSessionId) || null) : null;
+
+    let audioChunks: Buffer[] = [];
+    let isProcessing = false;
+    let shouldInterrupt = false;
+
+    ws.on("message", async (data: Buffer | string) => {
+      let msg: { type: string; data?: string };
+
+      if (typeof data === "string") {
+        try {
+          msg = JSON.parse(data);
+        } catch {
+          return;
+        }
+      } else {
+        // Binary data = audio chunk
+        msg = { type: "audio", data: data.toString("base64") };
+      }
+
+      if (msg.type === "audio" && msg.data) {
+        audioChunks.push(Buffer.from(msg.data, "base64"));
+      } else if (msg.type === "recording_end" || msg.type === "audio_end") {
+        if (isProcessing) return; // Ignore if already processing
+        isProcessing = true;
+        shouldInterrupt = false;
+
+        const audioBuffer = Buffer.concat(audioChunks);
+        audioChunks = [];
+
+        try {
+          await processVoiceTurn(ws, audioBuffer);
+        } catch (err) {
+          console.error("[ws/voice] Error:", err);
+          sendJson(ws, { type: "error", message: "Processing failed" });
+        }
+
+        isProcessing = false;
+      } else if (msg.type === "interrupt") {
+        shouldInterrupt = true;
+      }
+    });
+
+    ws.on("close", () => {
+      console.log("[ws/voice] Client disconnected");
+    });
+
+    async function processVoiceTurn(ws: WebSocket, audioBuffer: Buffer) {
+      if (!openai) {
+        sendJson(ws, { type: "error", message: "OpenAI not configured" });
+        return;
+      }
+
+      // 1. Whisper STT
+      const whisperModel = process.env.OPENAI_WHISPER_MODEL || "whisper-1";
+      let transcript: string;
+      try {
+        // VAD sends WAV, legacy client may send webm — Whisper accepts both
+        const isWav = audioBuffer.length > 4 && audioBuffer.toString("ascii", 0, 4) === "RIFF";
+        const audioFile = new File(
+          [new Uint8Array(audioBuffer)],
+          isWav ? "audio.wav" : "audio.webm",
+          { type: isWav ? "audio/wav" : "audio/webm" }
+        );
+        const sttResult = await openai.audio.transcriptions.create({
+          model: whisperModel,
+          file: audioFile,
+        });
+        transcript = sttResult.text;
+      } catch (err) {
+        console.error("[ws/voice] Whisper error:", err);
+        sendJson(ws, { type: "error", message: "Speech recognition failed" });
+        return;
+      }
+
+      if (!transcript.trim()) {
+        sendJson(ws, { type: "transcript", text: "" });
+        return;
+      }
+
+      console.log(`[ws/voice] User: ${transcript}`);
+      sendJson(ws, { type: "transcript", text: transcript });
+
+      // 2. Claude SDK query
+      const cwd = connSessionCwd || process.env.ATHENA_CWD || process.cwd();
+      const resumeId = connSessionId || sessions.get("default");
+
+      let fullText = "";
+      try {
+        const result = query({
+          prompt: transcript,
+          options: {
+            systemPrompt: SYSTEM_PROMPT,
+            cwd,
+            model: process.env.ATHENA_MODEL || "claude-sonnet-4-5-20250929",
+            permissionMode: "bypassPermissions",
+            allowDangerouslySkipPermissions: true,
+            ...(resumeId ? { resume: resumeId } : {}),
+            maxTurns: 25,
+            tools: { type: "preset", preset: "claude_code" },
+            settingSources: ["project", "user"],
+          },
+        });
+
+        for await (const message of result) {
+          if (shouldInterrupt) break;
+
+          const sid = getSessionId(message);
+          if (sid) {
+            connSessionId = sid;
+            sessions.set("default", connSessionId);
+          }
+
+          const content = getAssistantContent(message);
+          if (content) {
+            const hasToolUse = content.some((block) => block.type === "tool_use");
+            if (!hasToolUse) {
+              const text = content
+                .filter((block) => block.type === "text")
+                .map((block) => block.text || "")
+                .join("");
+              if (text) fullText = text;
+            }
+          }
+
+          const resultText = getResultText(message);
+          if (!fullText && resultText) {
+            fullText = resultText;
+          }
+        }
+      } catch (err) {
+        console.error("[ws/voice] Claude error:", err);
+        fullText = "Sorry, I hit an error. Try again.";
+      }
+
+      if (!fullText) fullText = "I completed the task.";
+      if (shouldInterrupt) return;
+
+      console.log(`[ws/voice] Athena: ${fullText.slice(0, 100)}...`);
+      sendJson(ws, { type: "response_text", text: fullText });
+
+      // 3. OpenAI TTS — stream sentence by sentence
+      const sentences = splitSentences(fullText);
+      const ttsModel = process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts";
+      const ttsVoice = (process.env.OPENAI_TTS_VOICE || "coral") as "coral" | "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer";
+
+      for (const sentence of sentences) {
+        if (shouldInterrupt) break;
+        if (!sentence.trim()) continue;
+
+        try {
+          const ttsResponse = await openai.audio.speech.create({
+            model: ttsModel,
+            voice: ttsVoice,
+            input: sentence,
+            response_format: "pcm",
+          });
+
+          const arrayBuf = await ttsResponse.arrayBuffer();
+          const pcmBuffer = Buffer.from(arrayBuf);
+
+          // Send in ~4KB chunks for smooth streaming
+          const CHUNK_SIZE = 4096;
+          for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
+            if (shouldInterrupt) break;
+            const chunk = pcmBuffer.subarray(i, Math.min(i + CHUNK_SIZE, pcmBuffer.length));
+            sendJson(ws, {
+              type: "audio_chunk",
+              data: chunk.toString("base64"),
+              sampleRate: 24000,
+              channels: 1,
+              bitDepth: 16,
+            });
+          }
+        } catch (err) {
+          console.error("[ws/voice] TTS error for sentence:", err);
+        }
+      }
+
+      sendJson(ws, { type: "tts_end" });
+    }
+  });
+
+  return wss;
+}
+
+function sendJson(ws: WebSocket, obj: Record<string, unknown>) {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(obj));
+  }
+}
+
+function splitSentences(text: string): string[] {
+  // Split on sentence boundaries while keeping the delimiters
+  const parts = text.match(/[^.!?]+[.!?]+[\s]*/g);
+  if (!parts) return [text];
+  // If there's remaining text after the last match, add it
+  const joined = parts.join("");
+  if (joined.length < text.length) {
+    parts.push(text.slice(joined.length));
+  }
+  return parts;
+}
+
+// ─── ElevenLabs Chat Completions (existing) ──────────────────────────────────
 
 app.post("/v1/chat/completions", async (req, res) => {
   const { messages, stream } = req.body;
@@ -87,7 +570,7 @@ app.post("/v1/chat/completions", async (req, res) => {
         prompt: userText,
         options: {
           systemPrompt: SYSTEM_PROMPT,
-          cwd: process.env.ATHENA_CWD || process.cwd(),
+          cwd: (existingSessionId ? knownSessionCwds.get(existingSessionId) : null) || process.env.ATHENA_CWD || process.cwd(),
           model: process.env.ATHENA_MODEL || "claude-sonnet-4-5-20250929",
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
@@ -101,36 +584,27 @@ app.post("/v1/chat/completions", async (req, res) => {
 
       for await (const message of result) {
         // Capture session ID for continuation
-        if ("session_id" in message && message.session_id && !sessionId) {
-          sessionId = message.session_id;
+        const sid = getSessionId(message);
+        if (sid && !sessionId) {
+          sessionId = sid;
           sessions.set(convId, sessionId);
         }
 
-        if (message.type === "stream_event") {
-          // Partial streaming: extract text deltas
-          const event = message.event as {
-            type: string;
-            delta?: { type: string; text?: string };
-          };
-          if (
-            event.type === "content_block_delta" &&
-            event.delta?.type === "text_delta" &&
-            event.delta.text
-          ) {
-            lastAssistantText += event.delta.text;
-          }
-        } else if (message.type === "assistant") {
+        const deltaText = getStreamDeltaText(message);
+        if (deltaText) {
+          lastAssistantText += deltaText;
+        }
+
+        const content = getAssistantContent(message);
+        if (content) {
           // Complete assistant message: check if it's text-only (final response)
-          const apiMsg = (message as { message: { content: Array<{ type: string; text?: string }> } }).message;
-          const hasToolUse = apiMsg.content.some(
-            (block: { type: string }) => block.type === "tool_use"
-          );
+          const hasToolUse = content.some((block) => block.type === "tool_use");
 
           if (!hasToolUse) {
             // This is likely the final text response, stream it
-            const text = apiMsg.content
-              .filter((block: { type: string }) => block.type === "text")
-              .map((block: { text?: string }) => block.text || "")
+            const text = content
+              .filter((block) => block.type === "text")
+              .map((block) => block.text || "")
               .join("");
 
             if (text) {
@@ -176,11 +650,13 @@ app.post("/v1/chat/completions", async (req, res) => {
               chunkIndex++;
             }
           }
-        } else if (message.type === "result") {
+        }
+
+        const resultText = getResultText(message);
+        if (message.type === "result") {
           // If we haven't streamed anything yet, use the result text
-          const resultMsg = message as { subtype: string; result?: string };
-          if (chunkIndex === 0 && resultMsg.subtype === "success" && resultMsg.result) {
-            const words = resultMsg.result.split(/(\s+)/);
+          if (chunkIndex === 0 && resultText) {
+            const words = resultText.split(/(\s+)/);
             for (const word of words) {
               if (!word) continue;
               const chunk = {
@@ -254,7 +730,7 @@ app.post("/v1/chat/completions", async (req, res) => {
         prompt: userText,
         options: {
           systemPrompt: SYSTEM_PROMPT,
-          cwd: process.env.ATHENA_CWD || process.cwd(),
+          cwd: (existingSessionId ? knownSessionCwds.get(existingSessionId) : null) || process.env.ATHENA_CWD || process.cwd(),
           model: process.env.ATHENA_MODEL || "claude-sonnet-4-5-20250929",
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
@@ -269,15 +745,14 @@ app.post("/v1/chat/completions", async (req, res) => {
       let responseText = "";
       for await (const message of result) {
         console.log("[bridge] Message type:", message.type);
-        if ("session_id" in message && message.session_id) {
-          sessions.set(convId, message.session_id);
+        const sid = getSessionId(message);
+        if (sid) {
+          sessions.set(convId, sid);
         }
-        if (message.type === "result") {
-          const resultMsg = message as { subtype: string; result?: string; errors?: string[] };
-          console.log("[bridge] Result:", resultMsg.subtype, resultMsg.result?.slice(0, 100) || resultMsg.errors);
-          if (resultMsg.subtype === "success" && resultMsg.result) {
-            responseText = resultMsg.result;
-          }
+        const resultText = getResultText(message);
+        if (resultText) {
+          console.log("[bridge] Result:", resultText.slice(0, 100));
+          responseText = resultText;
         }
       }
 
@@ -305,9 +780,9 @@ app.post("/v1/chat/completions", async (req, res) => {
   }
 });
 
-// Health check
+// Health check — no sensitive data
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", sessions: sessions.size });
+  res.json({ status: "ok" });
 });
 
 // Test route
@@ -316,9 +791,20 @@ app.post("/test", (_req, res) => {
   res.json({ ok: true });
 });
 
+// ─── Start Server with WebSocket ─────────────────────────────────────────────
+
 const PORT = parseInt(process.env.BRIDGE_PORT || "8013", 10);
-app.listen(PORT, () => {
+const server = createServer(app);
+const wss = setupWebSocket(server);
+
+const BIND_HOST = process.env.BRIDGE_HOST || "127.0.0.1";
+server.listen(PORT, BIND_HOST, () => {
   console.log(`[bridge] Athena LLM bridge running on http://localhost:${PORT}`);
-  console.log(`[bridge] Endpoint: POST http://localhost:${PORT}/v1/chat/completions`);
+  console.log(`[bridge] Endpoints:`);
+  console.log(`  POST http://localhost:${PORT}/v1/chat/completions`);
+  console.log(`  GET  http://localhost:${PORT}/v1/sessions`);
+  console.log(`  POST http://localhost:${PORT}/v1/session/select`);
+  console.log(`  WS   ws://localhost:${PORT}/ws/voice`);
   console.log(`[bridge] CWD: ${process.env.ATHENA_CWD || process.cwd()}`);
+  console.log(`[bridge] OpenAI TTS: ${openai ? "enabled" : "disabled (no OPENAI_API_KEY)"}`);
 });
