@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "bridge": "npx tsx bridge/server.ts",
-    "bridge:dev": "npx tsx --watch bridge/server.ts"
+    "bridge:dev": "npx tsx --watch bridge/server.ts",
+    "athena": "npx tsx bin/athena.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.49",
@@ -17,8 +18,10 @@
     "@types/ws": "^8.18.1",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "http-proxy-middleware": "^3.0.5",
     "next": "^15.3.3",
     "openai": "^6.22.0",
+    "qrcode-terminal": "^0.12.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "ws": "^8.19.0"

@@ -12,6 +12,8 @@ export async function GET() {
       elevenlabs: { available: elevenlabsConfigured },
       openai: { available: openaiConfigured },
     },
+    // Bridge URL for WebSocket connection (client needs this for OpenAI voice)
+    bridgeUrl: process.env.BRIDGE_URL || "http://localhost:8013",
     // Bridge auth token for WebSocket connection (only if set)
     bridgeToken: process.env.BRIDGE_AUTH_TOKEN || process.env.BRIDGE_API_KEY || "",
   });

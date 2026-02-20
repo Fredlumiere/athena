@@ -116,6 +116,8 @@ export function useOpenAIProvider(
         try {
           const { MicVAD } = await import("@ricky0123/vad-web");
           const vad = await MicVAD.new({
+            // Force single-threaded WASM — mobile Safari lacks SharedArrayBuffer
+            ortConfig: (ort) => { ort.env.wasm.numThreads = 1; },
             getStream: async () => stream,
             positiveSpeechThreshold: 0.8,
             negativeSpeechThreshold: 0.3,

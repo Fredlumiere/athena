@@ -794,15 +794,38 @@ app.post("/test", (_req, res) => {
   res.json({ ok: true });
 });
 
+// ─── Launcher mode auth ─────────────────────────────────────────────────────
+// When ATHENA_TOKEN is set (via npm run athena), skip PIN — the ngrok URL is the secret
+const ATHENA_TOKEN = process.env.ATHENA_TOKEN || "";
+
+app.get("/api/auth/mode", (_req, res) => {
+  res.json({ skipAuth: !!ATHENA_TOKEN });
+});
+
+// ─── Reverse proxy to Next.js for non-bridge routes ─────────────────────────
+
+import { createProxyMiddleware } from "http-proxy-middleware";
+
+const NEXTJS_URL = process.env.NEXTJS_URL || "http://localhost:3001";
+app.use(
+  "/",
+  createProxyMiddleware({
+    target: NEXTJS_URL,
+    changeOrigin: true,
+    ws: false, // We handle WS ourselves via /ws/voice
+  })
+);
+
 // ─── Start Server with WebSocket ─────────────────────────────────────────────
 
 const PORT = parseInt(process.env.BRIDGE_PORT || "8013", 10);
 const server = createServer(app);
 const wss = setupWebSocket(server);
 
-const BIND_HOST = process.env.BRIDGE_HOST || "127.0.0.1";
+const BIND_HOST = process.env.BRIDGE_HOST || "0.0.0.0";
 server.listen(PORT, BIND_HOST, () => {
   console.log(`[bridge] Athena LLM bridge running on http://localhost:${PORT}`);
+  console.log(`[bridge] Proxying to Next.js at ${NEXTJS_URL}`);
   console.log(`[bridge] Endpoints:`);
   console.log(`  POST http://localhost:${PORT}/v1/chat/completions`);
   console.log(`  GET  http://localhost:${PORT}/v1/sessions`);

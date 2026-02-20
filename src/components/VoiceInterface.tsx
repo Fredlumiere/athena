@@ -52,11 +52,24 @@ export default function VoiceInterface() {
   });
   const [elevenlabsAvailable, setElevenlabsAvailable] = useState(true);
   const [openaiAvailable, setOpenaiAvailable] = useState(false);
-  const [bridgeUrl] = useState("http://localhost:8013");
+  const [bridgeUrl, setBridgeUrl] = useState("http://localhost:8013");
   const [bridgeToken, setBridgeToken] = useState("");
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const thinkingSoundRef = useRef<HTMLAudioElement | null>(null);
+
+  // ─── Launcher auto-auth (skip PIN when launched via npm run athena) ─────
+
+  useEffect(() => {
+    fetch("/api/auth/mode")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.skipAuth) {
+          setPhase("voice");
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // ─── Load TTS config ────────────────────────────────────────────────────
 
@@ -68,12 +81,24 @@ export default function VoiceInterface() {
         setOpenaiAvailable(data.providers?.openai?.available ?? false);
         if (data.bridgeToken) setBridgeToken(data.bridgeToken);
 
-        // If saved provider isn't available, fall back
-        const saved = localStorage.getItem("athena-tts-provider") as TTSProvider | null;
-        if (saved === "openai" && !data.providers?.openai?.available) {
-          setTtsProvider("elevenlabs");
-        } else if (saved === "elevenlabs" && !data.providers?.elevenlabs?.available) {
-          if (data.providers?.openai?.available) setTtsProvider("openai");
+        // Use current origin for bridge URL when accessed remotely (e.g. via ngrok)
+        // The bridge serves both HTTP and WebSocket on the same port
+        const isRemote = typeof window !== "undefined"
+          && window.location.hostname !== "localhost"
+          && window.location.hostname !== "127.0.0.1";
+        setBridgeUrl(isRemote ? window.location.origin : (data.bridgeUrl || "http://localhost:8013"));
+
+        // When accessed remotely (ngrok), force OpenAI — ElevenLabs can't callback to the bridge
+        if (isRemote && data.providers?.openai?.available) {
+          setTtsProvider("openai");
+        } else {
+          // If saved provider isn't available, fall back
+          const saved = localStorage.getItem("athena-tts-provider") as TTSProvider | null;
+          if (saved === "openai" && !data.providers?.openai?.available) {
+            setTtsProvider("elevenlabs");
+          } else if (saved === "elevenlabs" && !data.providers?.elevenlabs?.available) {
+            if (data.providers?.openai?.available) setTtsProvider("openai");
+          }
         }
       })
       .catch(() => {
