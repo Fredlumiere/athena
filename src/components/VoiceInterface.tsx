@@ -29,6 +29,7 @@ export default function VoiceInterface() {
   const [thinking, setThinking] = useState(false);
   const [showVoices, setShowVoices] = useState(false);
   const [selectedVoice, setSelectedVoice] = useState(VOICES[0]);
+  const [debug, setDebug] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const thinkingSoundRef = useRef<HTMLAudioElement | null>(null);
 
@@ -107,13 +108,23 @@ export default function VoiceInterface() {
 
   const startConversation = async () => {
     try {
-      await navigator.mediaDevices.getUserMedia({ audio: true });
+      setDebug("Requesting mic...");
+      // Request mic permission explicitly first
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Stop the stream - ElevenLabs SDK will create its own
+      stream.getTracks().forEach((t) => t.stop());
+      setDebug("Mic OK. Connecting to agent...");
 
       const agentId = process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID;
       if (!agentId) {
-        setMessages([{ role: "event", text: "Missing agent ID configuration" }]);
+        setDebug("ERROR: No agent ID");
+        setMessages([{ role: "event", text: "Missing agent ID. Check NEXT_PUBLIC_ELEVENLABS_AGENT_ID." }]);
         return;
       }
+
+      setDebug(`Agent: ${agentId.slice(0, 12)}... Voice: ${selectedVoice.name}`);
+      setMessages([{ role: "event", text: "Connecting..." }]);
+
       await conversation.startSession({
         agentId,
         connectionType: "webrtc",
@@ -121,10 +132,13 @@ export default function VoiceInterface() {
           tts: { voiceId: selectedVoice.id },
         },
       });
+      setDebug("Connected!");
     } catch (err) {
       console.error("Failed to start:", err);
+      const msg = err instanceof Error ? err.message : String(err);
+      setDebug(`ERROR: ${msg}`);
       setMessages([
-        { role: "event", text: "Failed to connect. Check mic permissions." },
+        { role: "event", text: `Connection failed: ${msg}` },
       ]);
     }
   };
@@ -310,6 +324,13 @@ export default function VoiceInterface() {
           <span className="text-xs text-text-dim">Tap to connect</span>
         )}
       </div>
+
+      {/* Debug info */}
+      {debug && (
+        <div className="px-4 py-2 text-[10px] text-text-dim font-mono bg-bg border-t border-border">
+          {debug} | status: {conversation.status}
+        </div>
+      )}
     </div>
   );
 }
