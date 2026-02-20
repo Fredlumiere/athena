@@ -8,9 +8,27 @@ type Message = {
   text: string;
 };
 
+type Voice = { id: string; name: string; desc: string };
+
+const VOICES: Voice[] = [
+  { id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah", desc: "Mature, confident" },
+  { id: "cgSgspJ2msm6clMCkdW9", name: "Jessica", desc: "Playful, warm" },
+  { id: "Xb7hH8MSUJpSbSDYk0k2", name: "Alice", desc: "Clear, British" },
+  { id: "XrExE9yKIg1WjnnlVkGX", name: "Matilda", desc: "Professional" },
+  { id: "pFZP5JQG7iQjIQuC4Bku", name: "Lily", desc: "Velvety, British" },
+  { id: "hpp4J3VqNfWAUOO0d1Us", name: "Bella", desc: "Bright, warm" },
+];
+
+const SESSION_PASSWORD = "athena2026";
+
 export default function VoiceInterface() {
+  const [authenticated, setAuthenticated] = useState(false);
+  const [pin, setPin] = useState("");
+  const [pinError, setPinError] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [thinking, setThinking] = useState(false);
+  const [showVoices, setShowVoices] = useState(false);
+  const [selectedVoice, setSelectedVoice] = useState(VOICES[0]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const thinkingSoundRef = useRef<HTMLAudioElement | null>(null);
 
@@ -76,17 +94,33 @@ export default function VoiceInterface() {
     });
   }, [messages]);
 
+  const handlePinSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (pin === SESSION_PASSWORD) {
+      setAuthenticated(true);
+      setPinError(false);
+    } else {
+      setPinError(true);
+      setPin("");
+    }
+  };
+
   const startConversation = async () => {
     try {
       await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      // Use agent ID directly (public agent, no signed URL needed)
       const agentId = process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID;
       if (!agentId) {
         setMessages([{ role: "event", text: "Missing agent ID configuration" }]);
         return;
       }
-      await conversation.startSession({ agentId, connectionType: "webrtc" });
+      await conversation.startSession({
+        agentId,
+        connectionType: "webrtc",
+        overrides: {
+          tts: { voiceId: selectedVoice.id },
+        },
+      });
     } catch (err) {
       console.error("Failed to start:", err);
       setMessages([
@@ -104,20 +138,92 @@ export default function VoiceInterface() {
   const isConnected = conversation.status === "connected";
   const isSpeaking = conversation.isSpeaking;
 
+  // Password gate
+  if (!authenticated) {
+    return (
+      <div className="flex flex-col h-dvh max-w-xl mx-auto items-center justify-center px-8">
+        <div className="w-16 h-16 rounded-full bg-accent/10 flex items-center justify-center mb-6">
+          <LockIcon />
+        </div>
+        <h1 className="text-xl font-semibold tracking-tight mb-2">Athena</h1>
+        <p className="text-text-dim text-sm mb-8 text-center">Enter your access code to continue</p>
+        <form onSubmit={handlePinSubmit} className="w-full max-w-xs flex flex-col gap-3">
+          <input
+            type="password"
+            value={pin}
+            onChange={(e) => { setPin(e.target.value); setPinError(false); }}
+            placeholder="Access code"
+            autoFocus
+            className={`w-full px-4 py-3 rounded-xl bg-surface border text-center text-lg tracking-widest outline-none transition-colors ${
+              pinError ? "border-red-500 shake" : "border-border focus:border-accent"
+            }`}
+          />
+          <button
+            type="submit"
+            className="w-full py-3 rounded-xl bg-accent text-white font-medium transition-all hover:opacity-90 active:scale-[0.98] cursor-pointer"
+          >
+            Enter
+          </button>
+          {pinError && (
+            <p className="text-red-500 text-xs text-center animate-fade-in">
+              Incorrect code. Try again.
+            </p>
+          )}
+        </form>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-dvh max-w-xl mx-auto">
       {/* Header */}
       <header className="flex items-center justify-between px-5 py-4 border-b border-border">
         <h1 className="text-lg font-semibold tracking-tight">Athena</h1>
-        <div className="flex items-center gap-2 text-sm text-text-dim">
-          <div
-            className={`w-2 h-2 rounded-full transition-colors ${
-              isConnected ? "bg-success" : "bg-text-dim"
-            }`}
-          />
-          {isConnected ? "Live" : "Offline"}
+        <div className="flex items-center gap-3">
+          {/* Voice picker */}
+          {!isConnected && (
+            <button
+              onClick={() => setShowVoices(!showVoices)}
+              className="flex items-center gap-1.5 text-sm text-text-dim hover:text-white transition-colors cursor-pointer"
+              title="Change voice"
+            >
+              <VoiceIcon />
+              <span className="hidden sm:inline">{selectedVoice.name}</span>
+            </button>
+          )}
+          <div className="flex items-center gap-2 text-sm text-text-dim">
+            <div
+              className={`w-2 h-2 rounded-full transition-colors ${
+                isConnected ? "bg-success" : "bg-text-dim"
+              }`}
+            />
+            {isConnected ? "Live" : "Offline"}
+          </div>
         </div>
       </header>
+
+      {/* Voice selector dropdown */}
+      {showVoices && !isConnected && (
+        <div className="border-b border-border bg-surface/80 backdrop-blur px-5 py-3 animate-fade-in">
+          <p className="text-xs text-text-dim mb-2">Choose Athena's voice</p>
+          <div className="grid grid-cols-2 gap-2">
+            {VOICES.map((voice) => (
+              <button
+                key={voice.id}
+                onClick={() => { setSelectedVoice(voice); setShowVoices(false); }}
+                className={`px-3 py-2 rounded-lg text-left text-sm transition-all cursor-pointer ${
+                  selectedVoice.id === voice.id
+                    ? "bg-accent/20 border border-accent/50 text-white"
+                    : "bg-bg border border-border text-text-dim hover:border-accent/30"
+                }`}
+              >
+                <div className="font-medium">{voice.name}</div>
+                <div className="text-xs opacity-60">{voice.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Messages */}
       <div
@@ -205,6 +311,28 @@ export default function VoiceInterface() {
         )}
       </div>
     </div>
+  );
+}
+
+function LockIcon() {
+  return (
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-accent">
+      <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  );
+}
+
+function VoiceIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 10v3" />
+      <path d="M6 6v11" />
+      <path d="M10 3v18" />
+      <path d="M14 8v7" />
+      <path d="M18 5v13" />
+      <path d="M22 10v3" />
+    </svg>
   );
 }
 
