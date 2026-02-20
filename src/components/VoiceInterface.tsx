@@ -88,17 +88,12 @@ export default function VoiceInterface() {
           && window.location.hostname !== "127.0.0.1";
         setBridgeUrl(isRemote ? window.location.origin : (data.bridgeUrl || "http://localhost:8013"));
 
-        // When accessed remotely (ngrok), force OpenAI — ElevenLabs can't callback to the bridge
-        if (isRemote && data.providers?.openai?.available) {
-          setTtsProvider("openai");
-        } else {
-          // If saved provider isn't available, fall back
-          const saved = localStorage.getItem("athena-tts-provider") as TTSProvider | null;
-          if (saved === "openai" && !data.providers?.openai?.available) {
-            setTtsProvider("elevenlabs");
-          } else if (saved === "elevenlabs" && !data.providers?.elevenlabs?.available) {
-            if (data.providers?.openai?.available) setTtsProvider("openai");
-          }
+        // If saved provider isn't available, fall back
+        const saved = localStorage.getItem("athena-tts-provider") as TTSProvider | null;
+        if (saved === "openai" && !data.providers?.openai?.available) {
+          setTtsProvider("elevenlabs");
+        } else if (saved === "elevenlabs" && !data.providers?.elevenlabs?.available) {
+          if (data.providers?.openai?.available) setTtsProvider("openai");
         }
       })
       .catch(() => {

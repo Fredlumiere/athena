@@ -1,4 +1,5 @@
 #!/usr/bin/env npx tsx
+import { config as loadEnv } from "dotenv";
 import { spawn, ChildProcess } from "child_process";
 import { randomUUID } from "crypto";
 import fs from "fs";
@@ -9,6 +10,9 @@ import qrcode from "qrcode-terminal";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Load .env.local so we have ELEVENLABS_API_KEY etc.
+loadEnv({ path: path.resolve(__dirname, "..", ".env.local") });
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
@@ -115,6 +119,69 @@ async function getNgrokUrl(maxAttempts = 30): Promise<string> {
     await sleep(1000);
   }
   throw new Error("Could not get ngrok URL after 30s");
+}
+
+// ─── Update ElevenLabs agent callback URL ───────────────────────────────────
+
+async function updateElevenLabsAgentUrl(ngrokUrl: string) {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  const agentId = process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID;
+  if (!apiKey || !agentId) {
+    log("Skipping ElevenLabs URL update (no API key or agent ID)");
+    return;
+  }
+
+  const newUrl = `${ngrokUrl}/v1/chat/completions`;
+  log(`Updating ElevenLabs agent LLM URL → ${newUrl}`);
+
+  try {
+    // Get current agent config to preserve existing settings
+    const getRes = await fetch(`https://api.elevenlabs.io/v1/convai/agents/${agentId}`, {
+      headers: { "xi-api-key": apiKey },
+    });
+
+    if (!getRes.ok) {
+      logError(`Failed to get ElevenLabs agent config: ${getRes.status}`);
+      return;
+    }
+
+    const agent = (await getRes.json()) as Record<string, unknown>;
+    const convConfig = agent.conversation_config as Record<string, unknown> | undefined;
+    const agentConfig = convConfig?.agent as Record<string, unknown> | undefined;
+    const promptConfig = agentConfig?.prompt as Record<string, unknown> | undefined;
+    const existingCustomLlm = promptConfig?.custom_llm as Record<string, unknown> | undefined;
+
+    // Patch just the custom LLM URL
+    const patchRes = await fetch(`https://api.elevenlabs.io/v1/convai/agents/${agentId}`, {
+      method: "PATCH",
+      headers: {
+        "xi-api-key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        conversation_config: {
+          agent: {
+            prompt: {
+              llm: promptConfig?.llm || "custom_llm",
+              custom_llm: {
+                ...existingCustomLlm,
+                url: newUrl,
+              },
+            },
+          },
+        },
+      }),
+    });
+
+    if (patchRes.ok) {
+      log("ElevenLabs agent URL updated ✓");
+    } else {
+      const text = await patchRes.text();
+      logError(`Failed to update ElevenLabs agent: ${patchRes.status} ${text}`);
+    }
+  } catch (err) {
+    logError(`ElevenLabs agent update failed: ${err}`);
+  }
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -230,7 +297,10 @@ async function main() {
   }
   log(`Tunnel: ${publicUrl}`);
 
-  // 6. Auto-select session via bridge API
+  // 6. Update ElevenLabs agent callback URL so their servers can reach the bridge
+  await updateElevenLabsAgentUrl(publicUrl);
+
+  // 7. Auto-select session via bridge API
   if (session) {
     try {
       const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/v1/session/select`, {
@@ -246,7 +316,7 @@ async function main() {
     }
   }
 
-  // 7. Build URL and show QR code
+  // 8. Build URL and show QR code
   const fullUrl = publicUrl;
 
   console.log();
