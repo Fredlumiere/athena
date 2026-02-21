@@ -273,27 +273,35 @@ async function main() {
     }
   }
 
-  // 4. Start ngrok
-  log("Starting ngrok tunnel...");
-  const ngrok = spawn("ngrok", ["http", String(BRIDGE_PORT)], {
-    stdio: ["ignore", "ignore", "pipe"],
-  });
-  children.push(ngrok);
-  ngrok.stderr?.on("data", (d: Buffer) => {
-    const line = d.toString().trim();
-    if (line.toLowerCase().includes("error")) {
-      logError(`[ngrok] ${line}`);
-    }
-  });
-
-  // 5. Get public URL
+  // 4. Start ngrok (reuse existing tunnel if one is already running)
   let publicUrl: string;
+  let ngrokExisted = false;
+
   try {
-    publicUrl = await getNgrokUrl();
-  } catch (err) {
-    logError("Failed to get ngrok URL. Is ngrok installed and configured?");
-    cleanup();
-    return;
+    publicUrl = await getNgrokUrl(2); // Quick check — 2 attempts (2s)
+    log(`Reusing existing ngrok tunnel: ${publicUrl}`);
+    ngrokExisted = true;
+  } catch {
+    // No existing tunnel — start a new one
+    log("Starting ngrok tunnel...");
+    const ngrok = spawn("ngrok", ["http", String(BRIDGE_PORT)], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    children.push(ngrok);
+    ngrok.stderr?.on("data", (d: Buffer) => {
+      const line = d.toString().trim();
+      if (line.toLowerCase().includes("error")) {
+        logError(`[ngrok] ${line}`);
+      }
+    });
+
+    try {
+      publicUrl = await getNgrokUrl();
+    } catch {
+      logError("Failed to get ngrok URL. Is ngrok installed and configured?");
+      cleanup();
+      return;
+    }
   }
   log(`Tunnel: ${publicUrl}`);
 
