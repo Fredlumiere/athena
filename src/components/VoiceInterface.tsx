@@ -29,7 +29,9 @@ type AppPhase = "auth" | "sessions" | "voice";
 
 export default function VoiceInterface() {
   // Auth
-  const [phase, setPhase] = useState<AppPhase>("sessions");
+  const [phase, setPhase] = useState<AppPhase>("auth");
+  const [pin, setPin] = useState("");
+  const [authError, setAuthError] = useState("");
 
   // Sessions
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -77,11 +79,38 @@ export default function VoiceInterface() {
   // ─── Debug logger ─────────────────────────────────────────────────────
   const debugLog = useDebugLog();
 
-  // ─── Load sessions on mount ────────────────────────────────────────────
+  // ─── Check auth on mount ──────────────────────────────────────────────
 
   useEffect(() => {
-    debugLog.log("Loading sessions...");
-    loadSessions();
+    // Try remember-me token first
+    const savedToken = localStorage.getItem("athena-session-token");
+    if (savedToken) {
+      fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: savedToken }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.ok) {
+            setPhase("sessions");
+            loadSessions();
+          }
+        })
+        .catch(() => {}); // token invalid or server down — show auth screen
+      return;
+    }
+
+    // Check if auth is skipped (no PIN configured)
+    fetch("/api/auth/mode")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.skipAuth) {
+          setPhase("sessions");
+          loadSessions();
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // ─── Load TTS config ────────────────────────────────────────────────────
@@ -350,6 +379,56 @@ export default function VoiceInterface() {
     ttsProvider === "elevenlabs" ? "bg-[#8b5cf6]/10" : "bg-[#10a37f]/10";
   const isConnecting = providerStatus === "connecting";
 
+  // ─── Auth Screen ──────────────────────────────────────────────────────
+
+  const handleAuth = async () => {
+    setAuthError("");
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin }),
+      });
+      const data = await res.json();
+      if (data.ok && data.token) {
+        localStorage.setItem("athena-session-token", data.token);
+        setPhase("sessions");
+        loadSessions();
+      } else {
+        setAuthError("Wrong password");
+        setPin("");
+      }
+    } catch {
+      setAuthError("Can't reach server");
+    }
+  };
+
+  if (phase === "auth") {
+    return (
+      <div className="flex flex-col h-dvh max-w-xl mx-auto items-center justify-center px-8">
+        <h1 className="text-2xl font-semibold tracking-tight mb-8">Athena</h1>
+        <input
+          type="password"
+          inputMode="numeric"
+          value={pin}
+          onChange={(e) => setPin(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleAuth()}
+          placeholder="Password"
+          autoFocus
+          className="w-full max-w-[240px] text-center text-lg tracking-widest px-4 py-3 rounded-xl bg-surface border border-border focus:border-accent outline-none transition-colors"
+        />
+        {authError && <p className="text-red-400 text-sm mt-3">{authError}</p>}
+        <button
+          onClick={handleAuth}
+          disabled={!pin}
+          className="mt-4 px-6 py-2 rounded-xl bg-accent text-white text-sm font-medium disabled:opacity-40 cursor-pointer transition-opacity"
+        >
+          Enter
+        </button>
+      </div>
+    );
+  }
+
   // ─── Session Picker ─────────────────────────────────────────────────────
 
   if (phase === "sessions") {
@@ -562,6 +641,22 @@ export default function VoiceInterface() {
               }`}
             >
               {showDebug ? "On" : "Off"}
+            </button>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-text-dim">Bridge server</span>
+            <button
+              onClick={async () => {
+                try {
+                  await fetch(`${bridgeUrl}/v1/restart`, { method: "POST" });
+                  setMessages([{ role: "event", text: "Restarting bridge..." }]);
+                } catch {
+                  setMessages((prev) => [...prev, { role: "event", text: "Restart failed — bridge unreachable" }]);
+                }
+              }}
+              className="text-xs px-2 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors cursor-pointer"
+            >
+              Restart
             </button>
           </div>
         </div>

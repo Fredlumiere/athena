@@ -1049,6 +1049,13 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
+// Remote restart — kills this process so the launcher (npm run athena) restarts it
+app.post("/v1/restart", (_req, res) => {
+  console.log("[bridge] Restart requested — exiting in 500ms");
+  res.json({ ok: true, message: "Restarting..." });
+  setTimeout(() => process.exit(0), 500);
+});
+
 // Test route
 app.post("/test", (_req, res) => {
   console.log("[bridge] Test route hit");
@@ -1056,11 +1063,12 @@ app.post("/test", (_req, res) => {
 });
 
 // ─── Launcher mode auth ─────────────────────────────────────────────────────
-// When ATHENA_TOKEN is set (via npm run athena), skip PIN — the ngrok URL is the secret
+// Always require PIN when ATHENA_PIN is set; skip only if no PIN configured
 const ATHENA_TOKEN = process.env.ATHENA_TOKEN || "";
+const ATHENA_PIN = process.env.ATHENA_PIN || "";
 
 app.get("/api/auth/mode", (_req, res) => {
-  res.json({ skipAuth: !!ATHENA_TOKEN });
+  res.json({ skipAuth: !ATHENA_PIN && !!ATHENA_TOKEN });
 });
 
 // ─── Reverse proxy to Next.js for non-bridge routes ─────────────────────────

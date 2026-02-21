@@ -38,7 +38,9 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+let shuttingDownGlobal = false;
 function cleanup() {
+  shuttingDownGlobal = true;
   log("Shutting down...");
   for (const child of children) {
     try { child.kill("SIGTERM"); } catch {}
@@ -232,15 +234,13 @@ async function main() {
     }
   }
 
-  // 3. Start bridge server
+  // 3. Start bridge server (with auto-restart for remote restart support)
   const bridgeRunning = await isPortInUse(BRIDGE_PORT);
   if (bridgeRunning) {
     log(`Bridge already running on port ${BRIDGE_PORT} — restarting with token...`);
-    // Can't inject token into running bridge, so we skip restarting for now
-    // In practice the user should not have a bridge already running
   }
 
-  if (!bridgeRunning) {
+  function startBridge() {
     log("Starting bridge server...");
     const bridge = spawn("npx", ["tsx", "bridge/server.ts"], {
       cwd: path.resolve(__dirname, ".."),
@@ -261,13 +261,21 @@ async function main() {
     bridge.stderr?.on("data", (d: Buffer) => {
       const line = d.toString().trim();
       if (line && !line.includes("ExperimentalWarning")) {
-        // Only show non-noisy stderr
         if (line.toLowerCase().includes("error")) {
           logError(`[bridge] ${line}`);
         }
       }
     });
-    // Wait for bridge to be ready
+    bridge.on("exit", (code) => {
+      if (shuttingDownGlobal) return;
+      log(`Bridge exited (code ${code}) — restarting in 1s...`);
+      setTimeout(startBridge, 1000);
+    });
+    return bridge;
+  }
+
+  if (!bridgeRunning) {
+    startBridge();
     for (let i = 0; i < 15; i++) {
       await sleep(1000);
       if (await isPortInUse(BRIDGE_PORT)) break;
