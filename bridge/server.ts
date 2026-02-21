@@ -111,6 +111,30 @@ Key behaviors:
 
 You are the founder's right hand. He calls you Athena. Be sharp, capable, and concise.`;
 
+// ─── Conversation Logging Helpers ─────────────────────────────────────────────
+
+function logConversationTurn(userMessage: string, assistantMessage: string, context?: { sessionId?: string; cwd?: string; provider?: string }) {
+  const timestamp = new Date().toISOString().split('T')[1].split('.')[0]; // HH:MM:SS
+  const border = "─".repeat(80);
+
+  console.log(`\n${border}`);
+  console.log(`🗣️  CONVERSATION TURN [${timestamp}]`);
+  if (context) {
+    const meta = [];
+    if (context.provider) meta.push(`provider: ${context.provider}`);
+    if (context.sessionId) meta.push(`session: ${context.sessionId.slice(0, 8)}...`);
+    if (context.cwd) meta.push(`cwd: ${context.cwd.split('/').slice(-2).join('/')}`);
+    if (meta.length > 0) {
+      console.log(`📋 ${meta.join(' | ')}`);
+    }
+  }
+  console.log(`${border}`);
+  console.log(`👤 USER:\n${userMessage}`);
+  console.log(`${border}`);
+  console.log(`🤖 ATHENA:\n${assistantMessage}`);
+  console.log(`${border}\n`);
+}
+
 // ─── Session Scanner ─────────────────────────────────────────────────────────
 
 interface SessionInfo {
@@ -431,7 +455,6 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
     });
 
     async function processTextTurn(ws: WebSocket, transcript: string) {
-      console.log(`[ws/voice] User (text): ${transcript}`);
       sendJson(ws, { type: "transcript", text: transcript });
 
       // Go straight to Claude (skip Whisper STT)
@@ -489,7 +512,13 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
       if (!fullText) fullText = "I completed the task.";
       if (shouldInterrupt) return;
 
-      console.log(`[ws/voice] Athena: ${fullText.slice(0, 100)}...`);
+      // Log the conversation turn
+      logConversationTurn(transcript, fullText, {
+        provider: "WebSocket (text)",
+        sessionId: connSessionId || undefined,
+        cwd,
+      });
+
       sendJson(ws, { type: "response_text", text: fullText });
 
       // TTS
@@ -566,7 +595,6 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
         return;
       }
 
-      console.log(`[ws/voice] User: ${transcript}`);
       sendJson(ws, { type: "transcript", text: transcript });
 
       // 2. Claude SDK query
@@ -624,7 +652,13 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
       if (!fullText) fullText = "I completed the task.";
       if (shouldInterrupt) return;
 
-      console.log(`[ws/voice] Athena: ${fullText.slice(0, 100)}...`);
+      // Log the conversation turn
+      logConversationTurn(transcript, fullText, {
+        provider: `WebSocket (${connSttModel})`,
+        sessionId: connSessionId || undefined,
+        cwd,
+      });
+
       sendJson(ws, { type: "response_text", text: fullText });
 
       // 3. OpenAI TTS — stream sentence by sentence
@@ -716,8 +750,6 @@ app.post("/v1/chat/completions", async (req, res) => {
             .map((c: { text: string }) => c.text)
             .join(" ")
         : "";
-
-  console.log(`[bridge] User: ${userText}`);
 
   // Derive a conversation ID from the messages to track sessions
   const convId = req.body.user_id || "default";
@@ -859,8 +891,18 @@ app.post("/v1/chat/completions", async (req, res) => {
           res.write("data: [DONE]\n\n");
         }
       }
+
+      // Log the conversation after completion
+      const responseText = finalText || lastAssistantText || "I completed the task.";
+      logConversationTurn(userText, responseText, {
+        provider: "ElevenLabs (streaming)",
+        sessionId: sessionId || existingSessionId || undefined,
+        cwd: (existingSessionId ? knownSessionCwds.get(existingSessionId) : null) || process.env.ATHENA_CWD || process.cwd(),
+      });
     } catch (err) {
       console.error("[bridge] Error:", err);
+      const errorMsg = "Sorry, I hit an error. Try again.";
+
       // Send error as text if we haven't finished
       const errChunk = {
         id: responseId,
@@ -871,7 +913,7 @@ app.post("/v1/chat/completions", async (req, res) => {
           {
             index: 0,
             delta: {
-              content: "Sorry, I hit an error. Try again.",
+              content: errorMsg,
               ...(chunkIndex === 0 ? { role: "assistant" } : {}),
             },
             finish_reason: null,
@@ -889,18 +931,25 @@ app.post("/v1/chat/completions", async (req, res) => {
         })}\n\n`
       );
       res.write("data: [DONE]\n\n");
+
+      // Log the error conversation
+      logConversationTurn(userText, errorMsg, {
+        provider: "ElevenLabs (streaming)",
+        sessionId: sessionId || existingSessionId || undefined,
+        cwd: (existingSessionId ? knownSessionCwds.get(existingSessionId) : null) || process.env.ATHENA_CWD || process.cwd(),
+      });
     }
 
     res.end();
   } else {
     // Non-streaming response
     try {
-      console.log("[bridge] Starting agent query...");
+      const cwd = (existingSessionId ? knownSessionCwds.get(existingSessionId) : null) || process.env.ATHENA_CWD || process.cwd();
       const result = query({
         prompt: userText,
         options: {
           systemPrompt: SYSTEM_PROMPT,
-          cwd: (existingSessionId ? knownSessionCwds.get(existingSessionId) : null) || process.env.ATHENA_CWD || process.cwd(),
+          cwd,
           model: process.env.ATHENA_MODEL || "claude-sonnet-4-5-20250929",
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
@@ -913,18 +962,27 @@ app.post("/v1/chat/completions", async (req, res) => {
       });
 
       let responseText = "";
+      let capturedSessionId = existingSessionId;
       for await (const message of result) {
-        console.log("[bridge] Message type:", message.type);
         const sid = getSessionId(message);
         if (sid) {
+          capturedSessionId = sid;
           sessions.set(convId, sid);
         }
         const resultText = getResultText(message);
         if (resultText) {
-          console.log("[bridge] Result:", resultText.slice(0, 100));
           responseText = resultText;
         }
       }
+
+      const finalResponse = responseText || "I completed the task.";
+
+      // Log the conversation
+      logConversationTurn(userText, finalResponse, {
+        provider: "ElevenLabs (non-streaming)",
+        sessionId: capturedSessionId || undefined,
+        cwd,
+      });
 
       const response = {
         id: `chatcmpl-${Date.now()}`,
@@ -934,17 +992,23 @@ app.post("/v1/chat/completions", async (req, res) => {
         choices: [
           {
             index: 0,
-            message: { role: "assistant", content: responseText || "I completed the task." },
+            message: { role: "assistant", content: finalResponse },
             finish_reason: "stop",
           },
         ],
         usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       };
-      console.log("[bridge] Sending response:", JSON.stringify(response).slice(0, 200));
       res.status(200).json(response);
     } catch (err) {
       console.error("[bridge] Error:", err instanceof Error ? err.message : err);
       console.error("[bridge] Stack:", err instanceof Error ? err.stack : "n/a");
+
+      const errorMsg = "Sorry, I hit an error. Try again.";
+      logConversationTurn(userText, errorMsg, {
+        provider: "ElevenLabs (non-streaming)",
+        cwd: (existingSessionId ? knownSessionCwds.get(existingSessionId) : null) || process.env.ATHENA_CWD || process.cwd(),
+      });
+
       res.status(500).json({ error: "Agent query failed", details: err instanceof Error ? err.message : String(err) });
     }
   }
