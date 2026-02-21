@@ -53,6 +53,7 @@ app.use("/v1", checkAuth);
 
 // Session tracking: map conversation to Agent SDK session
 const sessions = new Map<string, string>(); // conversationId -> sessionId
+let selectedCwd: string | null = null; // cwd from the most recently selected session
 
 // Per-connection state is now managed inside each WS connection handler
 // and via the sessions Map for HTTP. No more global activeSessionId.
@@ -118,7 +119,14 @@ interface SessionInfo {
   cwd: string;
   lastMessage: string;
   timestamp: number;
+  active?: boolean;
 }
+
+// ─── Active Session Detection ─────────────────────────────────────────────────
+// A session is "active" if its JSONL file was written to very recently.
+// This is more reliable than matching process cwds, because the `claude`
+// process cwd may differ from the project directory stored in the session.
+const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
 
 // Cache for session scanning
 let sessionCache: { sessions: SessionInfo[]; timestamp: number } | null = null;
@@ -245,6 +253,12 @@ function scanSessions(): SessionInfo[] {
 
   walkDir(claudeDir, 0);
 
+  // Tag active sessions by recent file modification time
+  const now = Date.now();
+  for (const session of results) {
+    session.active = (now - session.timestamp) < ACTIVE_THRESHOLD_MS;
+  }
+
   // Sort by most recent first
   results.sort((a, b) => b.timestamp - a.timestamp);
 
@@ -286,11 +300,23 @@ app.post("/v1/session/select", (req, res) => {
   const validCwd = knownSessionCwds.get(sessionId) || process.env.ATHENA_CWD || process.cwd();
   const resolvedCwd = (cwd && knownSessionCwds.get(sessionId) === cwd) ? cwd : validCwd;
 
-  sessions.set("default", sessionId);
-  // Store cwd keyed to session for per-connection lookup
-  knownSessionCwds.set(sessionId, resolvedCwd);
+  // Check if this session is active (in use by a running Claude process).
+  // If so, don't store it as the resume target — we can't resume a session
+  // owned by another process. Instead, just store the cwd so the voice
+  // session starts fresh in the same project directory.
+  const scanned = scanSessions();
+  const isActive = scanned.find(s => s.id === sessionId)?.active ?? false;
 
-  console.log(`[bridge] Session selected: ${sessionId} (cwd: ${resolvedCwd})`);
+  if (!isActive) {
+    sessions.set("default", sessionId);
+  } else {
+    sessions.delete("default");
+  }
+  // Store cwd for per-connection lookup and as the default voice cwd
+  knownSessionCwds.set(sessionId, resolvedCwd);
+  selectedCwd = resolvedCwd;
+
+  console.log(`[bridge] Session selected: ${sessionId} (cwd: ${resolvedCwd}, active: ${isActive})`);
   res.json({ ok: true, sessionId, cwd: resolvedCwd });
 });
 
@@ -323,7 +349,9 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
     // Per-connection session state
     const url = new URL(req.url || "", `http://${req.headers.host}`);
     let connSessionId = url.searchParams.get("sessionId") || sessions.get("default") || null;
-    let connSessionCwd = connSessionId ? (knownSessionCwds.get(connSessionId) || null) : null;
+    let connSessionCwd = connSessionId
+      ? (knownSessionCwds.get(connSessionId) || selectedCwd || null)
+      : (selectedCwd || null);
 
     let audioChunks: Buffer[] = [];
     let isProcessing = false;
