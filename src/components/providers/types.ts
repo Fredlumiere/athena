@@ -1,7 +1,7 @@
 export type VoiceProviderStatus = "disconnected" | "connecting" | "connected";
 
 export interface VoiceMessage {
-  role: "user" | "assistant" | "event" | "interim";
+  role: "user" | "assistant" | "event" | "interim" | "activity";
   text: string;
 }
 

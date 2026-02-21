@@ -65,9 +65,14 @@ export default function VoiceInterface() {
   const [openaiAvailable, setOpenaiAvailable] = useState(false);
   const [bridgeUrl, setBridgeUrl] = useState("http://localhost:8013");
   const [bridgeToken, setBridgeToken] = useState("");
+  const [showDebug, setShowDebug] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("athena-show-debug") !== "false";
+    }
+    return true;
+  });
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const thinkingSoundRef = useRef<HTMLAudioElement | null>(null);
 
   // ─── Debug logger ─────────────────────────────────────────────────────
   const debugLog = useDebugLog();
@@ -144,21 +149,37 @@ export default function VoiceInterface() {
 
   // ─── Thinking sound ─────────────────────────────────────────────────────
 
-  useEffect(() => {
-    thinkingSoundRef.current = new Audio("/sounds/thinking.wav");
-    thinkingSoundRef.current.volume = 0.3;
-    thinkingSoundRef.current.loop = true;
-  }, []);
-
   const playThinkingSound = useCallback(() => {
-    thinkingSoundRef.current?.play().catch(() => {});
+    // Generate a soft, single-tone chime using Web Audio API
+    try {
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+
+      // Soft sine wave at 800Hz (pleasant mid-high tone)
+      oscillator.type = 'sine';
+      oscillator.frequency.value = 800;
+
+      // Very quiet with smooth fade out
+      gainNode.gain.setValueAtTime(0.08, audioContext.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+
+      // Play for 300ms
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + 0.3);
+
+      // Clean up
+      setTimeout(() => audioContext.close(), 400);
+    } catch (err) {
+      // Silently fail if Web Audio not supported
+    }
   }, []);
 
   const stopThinkingSound = useCallback(() => {
-    if (thinkingSoundRef.current) {
-      thinkingSoundRef.current.pause();
-      thinkingSoundRef.current.currentTime = 0;
-    }
+    // No-op now since we play a single tone, not a loop
   }, []);
 
   // ─── Provider callbacks ─────────────────────────────────────────────────
@@ -179,6 +200,11 @@ export default function VoiceInterface() {
       setUserSpeaking(true);
       return;
     }
+    if (msg.role === "activity") {
+      // Route activity to debug panel, not chat
+      debugLog.log(msg.text);
+      return;
+    }
     if (msg.role === "user") {
       setInterimText(""); // Clear interim when final transcript arrives
       setUserSpeaking(false);
@@ -191,7 +217,7 @@ export default function VoiceInterface() {
       const next = [...prev, msg];
       return next.length > 200 ? next.slice(-200) : next;
     });
-  }, []);
+  }, [debugLog]);
 
   const onSpeakingChange = useCallback((speaking: boolean) => {
     setIsSpeaking(speaking);
@@ -230,14 +256,13 @@ export default function VoiceInterface() {
   useEffect(() => {
     return () => {
       activeProviderRef.current.disconnect();
-      thinkingSoundRef.current?.pause();
     };
   }, []);
 
   useEffect(() => {
+    // Play single soft tone when thinking starts (doesn't loop)
     if (thinking) playThinkingSound();
-    else stopThinkingSound();
-  }, [thinking, playThinkingSound, stopThinkingSound]);
+  }, [thinking, playThinkingSound]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -459,11 +484,6 @@ export default function VoiceInterface() {
           )}
           <h1 className="text-lg font-semibold tracking-tight">Athena</h1>
           {isConnected && <ProviderBadge provider={ttsProvider} />}
-          {activeSession && (
-            <span className="text-xs text-text-dim font-mono truncate max-w-[140px]">
-              {activeSession.cwd !== "unknown" ? activeSession.cwd.split("/").pop() : activeSession.id.slice(0, 8)}
-            </span>
-          )}
         </div>
         <div className="flex items-center gap-2 text-sm text-text-dim">
           <div
@@ -474,6 +494,13 @@ export default function VoiceInterface() {
           {isConnected ? "Live" : "Offline"}
         </div>
       </header>
+
+      {/* Project path */}
+      {activeSession && activeSession.cwd !== "unknown" && (
+        <div className="px-5 py-1.5 border-b border-border/50 bg-surface/30 flex items-center gap-2">
+          <span className="text-[10px] text-text-dim font-mono truncate">{activeSession.cwd}</span>
+        </div>
+      )}
 
       {/* TTS Toggle + Voice selector + STT model */}
       {!isConnected && (
@@ -502,6 +529,21 @@ export default function VoiceInterface() {
               disabled={isConnected}
             />
           )}
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-text-dim">Debug panel</span>
+            <button
+              onClick={() => {
+                const next = !showDebug;
+                setShowDebug(next);
+                localStorage.setItem("athena-show-debug", String(next));
+              }}
+              className={`text-xs px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                showDebug ? "bg-accent/20 text-accent" : "bg-surface text-text-dim"
+              }`}
+            >
+              {showDebug ? "On" : "Off"}
+            </button>
+          </div>
         </div>
       )}
 
@@ -651,10 +693,12 @@ export default function VoiceInterface() {
       </div>
 
       {/* Debug Panel */}
-      <DebugPanel
-        entries={debugLog.entries}
-        onRunPreflight={() => runPreflight(debugLog, bridgeUrl)}
-      />
+      {showDebug && (
+        <DebugPanel
+          entries={debugLog.entries}
+          onRunPreflight={() => runPreflight(debugLog, bridgeUrl)}
+        />
+      )}
     </div>
   );
 }

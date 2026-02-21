@@ -247,6 +247,10 @@ export function useOpenAIProvider(
             break;
           }
 
+          case "activity":
+            cbRef.current.onMessage({ role: "activity", text: msg.text as string });
+            break;
+
           case "tts_end":
             break;
 

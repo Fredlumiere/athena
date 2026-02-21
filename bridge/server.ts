@@ -70,6 +70,22 @@ function getSessionId(message: SDKMessage): string | null {
 interface ContentBlock {
   type: string;
   text?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+}
+
+function summarizeInput(input: Record<string, unknown>): string {
+  // Extract the most useful detail from a tool_use input
+  if (typeof input.file_path === "string") return input.file_path;
+  if (typeof input.command === "string") return input.command.slice(0, 120);
+  if (typeof input.pattern === "string") return input.pattern;
+  if (typeof input.query === "string") return input.query.slice(0, 120);
+  if (typeof input.url === "string") return input.url;
+  // Fallback: first string value
+  for (const val of Object.values(input)) {
+    if (typeof val === "string" && val.length > 0) return val.slice(0, 100);
+  }
+  return "";
 }
 
 function getAssistantContent(message: SDKMessage): ContentBlock[] | null {
@@ -490,7 +506,14 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
           const content = getAssistantContent(message);
           if (content) {
             const hasToolUse = content.some((block) => block.type === "tool_use");
-            if (!hasToolUse) {
+            if (hasToolUse) {
+              for (const block of content) {
+                if (block.type === "tool_use" && block.name) {
+                  const detail = block.input ? summarizeInput(block.input) : "";
+                  sendJson(ws, { type: "activity", text: `${block.name}: ${detail}` });
+                }
+              }
+            } else {
               const text = content
                 .filter((block) => block.type === "text")
                 .map((block) => block.text || "")
@@ -630,7 +653,14 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
           const content = getAssistantContent(message);
           if (content) {
             const hasToolUse = content.some((block) => block.type === "tool_use");
-            if (!hasToolUse) {
+            if (hasToolUse) {
+              for (const block of content) {
+                if (block.type === "tool_use" && block.name) {
+                  const detail = block.input ? summarizeInput(block.input) : "";
+                  sendJson(ws, { type: "activity", text: `${block.name}: ${detail}` });
+                }
+              }
+            } else {
               const text = content
                 .filter((block) => block.type === "text")
                 .map((block) => block.text || "")
