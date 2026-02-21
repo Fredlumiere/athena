@@ -287,10 +287,15 @@ export default function VoiceInterface() {
     setSessionsLoading(true);
     setSessionsError("");
     try {
-      const res = await fetch("/api/bridge/sessions");
+      // Call bridge directly (not via Next.js proxy — avoids circular proxy loop)
+      const res = await fetch(`${bridgeUrl}/v1/sessions`);
       if (!res.ok) throw new Error("Failed to load sessions");
       const data = await res.json();
-      setSessions(data.sessions || []);
+      const all: SessionInfo[] = data.sessions || [];
+      // Show only sessions active in the last 7 days
+      const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const recent = all.filter((s: SessionInfo) => s.timestamp > weekAgo);
+      setSessions(recent.length > 0 ? recent : all.slice(0, 10));
     } catch {
       setSessionsError("Could not load sessions. Is the bridge running?");
     } finally {
@@ -300,15 +305,17 @@ export default function VoiceInterface() {
 
   const selectSession = async (session: SessionInfo) => {
     try {
-      await fetch("/api/bridge/select", {
+      // Call bridge directly (not via Next.js proxy — avoids circular proxy loop)
+      const res = await fetch(`${bridgeUrl}/v1/session/select`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: session.id, cwd: session.cwd }),
       });
+      if (!res.ok) throw new Error(`Select failed: ${res.status}`);
       setActiveSession(session);
       setPhase("voice");
-    } catch {
-      setSessionsError("Failed to select session");
+    } catch (err) {
+      setSessionsError(`Failed to select session: ${err instanceof Error ? err.message : "unknown"}`);
     }
   };
 
