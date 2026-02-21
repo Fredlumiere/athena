@@ -495,11 +495,31 @@ export default function VoiceInterface() {
         </div>
       </header>
 
-      {/* Project path */}
-      {activeSession && activeSession.cwd !== "unknown" && (
-        <div className="px-5 py-1.5 border-b border-border/50 bg-surface/30 flex items-center gap-2">
+      {/* Project path — tap to switch */}
+      {activeSession && activeSession.cwd !== "unknown" ? (
+        <button
+          onClick={async () => {
+            if (isConnected) await endConversation();
+            setPhase("sessions");
+            loadSessions();
+          }}
+          className="w-full px-5 py-1.5 border-b border-border/50 bg-surface/30 flex items-center gap-2 cursor-pointer hover:bg-surface/50 transition-colors text-left"
+        >
           <span className="text-[10px] text-text-dim font-mono truncate">{activeSession.cwd}</span>
-        </div>
+          <span className="text-[10px] text-text-dim/50 shrink-0">switch</span>
+        </button>
+      ) : (
+        <button
+          onClick={async () => {
+            if (isConnected) await endConversation();
+            setPhase("sessions");
+            loadSessions();
+          }}
+          className="w-full px-5 py-1.5 border-b border-border/50 bg-surface/30 flex items-center gap-2 cursor-pointer hover:bg-surface/50 transition-colors text-left"
+        >
+          <span className="text-[10px] text-text-dim">No project selected</span>
+          <span className="text-[10px] text-text-dim/50 shrink-0">switch</span>
+        </button>
       )}
 
       {/* TTS Toggle + Voice selector + STT model */}
@@ -530,7 +550,7 @@ export default function VoiceInterface() {
             />
           )}
           <div className="flex items-center justify-between">
-            <span className="text-xs text-text-dim">Debug panel</span>
+            <span className="text-xs text-text-dim">Activity log</span>
             <button
               onClick={() => {
                 const next = !showDebug;
@@ -637,7 +657,7 @@ export default function VoiceInterface() {
       </div>
 
       {/* Controls */}
-      <div className="px-5 py-6 pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] border-t border-border bg-surface flex flex-col items-center gap-3">
+      <div className="px-5 py-6 pb-[calc(3rem+env(safe-area-inset-bottom,0px))] border-t border-border bg-surface flex flex-col items-center gap-3">
         {!isConnected ? (
           <button
             onClick={startConversation}

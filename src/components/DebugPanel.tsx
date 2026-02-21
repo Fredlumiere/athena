@@ -120,7 +120,7 @@ export function DebugPanel({ entries, onRunPreflight }: { entries: DebugEntry[];
       >
         <span className="flex items-center gap-2">
           <span className="text-[10px]">{open ? "▼" : "▲"}</span>
-          <span>DEBUG</span>
+          <span>ACTIVITY</span>
           <span className="text-[#666]">({entries.length})</span>
           {errorCount > 0 && <span className="text-red-400">{errorCount} err</span>}
           {warnCount > 0 && <span className="text-yellow-400">{warnCount} warn</span>}
