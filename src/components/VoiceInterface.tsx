@@ -28,9 +28,7 @@ type AppPhase = "auth" | "sessions" | "voice";
 
 export default function VoiceInterface() {
   // Auth
-  const [phase, setPhase] = useState<AppPhase>("auth");
-  const [pin, setPin] = useState("");
-  const [pinError, setPinError] = useState(false);
+  const [phase, setPhase] = useState<AppPhase>("sessions");
 
   // Sessions
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -73,26 +71,11 @@ export default function VoiceInterface() {
   // ─── Debug logger ─────────────────────────────────────────────────────
   const debugLog = useDebugLog();
 
-  // ─── Launcher auto-auth (skip PIN when launched via npm run athena) ─────
-  const [launcherMode, setLauncherMode] = useState(false);
+  // ─── Load sessions on mount ────────────────────────────────────────────
 
   useEffect(() => {
-    debugLog.log("Checking auth mode...");
-    fetch("/api/auth/mode")
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.skipAuth) {
-          debugLog.success("Auth: skipped (launcher mode)");
-          setLauncherMode(true);
-          setPhase("sessions");
-          loadSessions();
-        } else {
-          debugLog.log("Auth: PIN required");
-        }
-      })
-      .catch((err) => {
-        debugLog.error(`Auth check failed: ${err}`);
-      });
+    debugLog.log("Loading sessions...");
+    loadSessions();
   }, []);
 
   // ─── Load TTS config ────────────────────────────────────────────────────
@@ -261,28 +244,6 @@ export default function VoiceInterface() {
 
   // ─── Handlers ───────────────────────────────────────────────────────────
 
-  const handlePinSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const res = await fetch("/api/auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pin }),
-      });
-      if (res.ok) {
-        setPinError(false);
-        setPhase("sessions");
-        loadSessions();
-      } else {
-        setPinError(true);
-        setPin("");
-      }
-    } catch {
-      setPinError(true);
-      setPin("");
-    }
-  };
-
   const loadSessions = async () => {
     setSessionsLoading(true);
     setSessionsError("");
@@ -364,48 +325,6 @@ export default function VoiceInterface() {
     ttsProvider === "elevenlabs" ? "bg-[#8b5cf6]/10" : "bg-[#10a37f]/10";
   const isConnecting = providerStatus === "connecting";
 
-  // ─── Auth Screen ────────────────────────────────────────────────────────
-
-  if (phase === "auth") {
-    return (
-      <div className="flex flex-col h-dvh max-w-xl mx-auto items-center justify-center px-8">
-        <div className="w-16 h-16 rounded-full bg-accent/10 flex items-center justify-center mb-6">
-          <LockIcon />
-        </div>
-        <h1 className="text-xl font-semibold tracking-tight mb-2">Athena</h1>
-        <p className="text-text-dim text-sm mb-8 text-center">
-          Enter your access code to continue
-        </p>
-        <form onSubmit={handlePinSubmit} className="w-full max-w-xs flex flex-col gap-3">
-          <input
-            type="password"
-            value={pin}
-            onChange={(e) => {
-              setPin(e.target.value);
-              setPinError(false);
-            }}
-            placeholder="Access code"
-            autoFocus
-            className={`w-full px-4 py-3 rounded-xl bg-surface border text-center text-lg tracking-widest outline-none transition-colors ${
-              pinError ? "border-red-500 shake" : "border-border focus:border-accent"
-            }`}
-          />
-          <button
-            type="submit"
-            className="w-full py-3 rounded-xl bg-accent text-white font-medium transition-all hover:opacity-90 active:scale-[0.98] cursor-pointer"
-          >
-            Enter
-          </button>
-          {pinError && (
-            <p className="text-red-500 text-xs text-center animate-fade-in">
-              Incorrect code. Try again.
-            </p>
-          )}
-        </form>
-      </div>
-    );
-  }
-
   // ─── Session Picker ─────────────────────────────────────────────────────
 
   if (phase === "sessions") {
@@ -425,15 +344,6 @@ export default function VoiceInterface() {
       <div className="flex flex-col h-dvh max-w-xl mx-auto">
         <header className="flex items-center justify-between px-5 py-4 border-b border-border">
           <div className="flex items-center gap-2">
-            {!launcherMode && (
-              <button
-                onClick={() => setPhase("auth")}
-                aria-label="Back to login"
-                className="text-text-dim hover:text-white transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-              >
-                <BackIcon />
-              </button>
-            )}
             <h1 className="text-lg font-semibold tracking-tight">Athena</h1>
           </div>
           <button
@@ -797,25 +707,6 @@ function LoadingSpinner() {
       className="animate-spin"
     >
       <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-    </svg>
-  );
-}
-
-function LockIcon() {
-  return (
-    <svg
-      width="28"
-      height="28"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="text-accent"
-    >
-      <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
-      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
     </svg>
   );
 }
