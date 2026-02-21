@@ -18,6 +18,7 @@ interface SessionInfo {
   cwd: string;
   lastMessage: string;
   timestamp: number;
+  active?: boolean;
 }
 
 type AppPhase = "auth" | "sessions" | "voice";
@@ -292,10 +293,9 @@ export default function VoiceInterface() {
       if (!res.ok) throw new Error("Failed to load sessions");
       const data = await res.json();
       const all: SessionInfo[] = data.sessions || [];
-      // Show only sessions active in the last 7 days
-      const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      const recent = all.filter((s: SessionInfo) => s.timestamp > weekAgo);
-      setSessions(recent.length > 0 ? recent : all.slice(0, 10));
+      // Show only sessions with a running Claude Code process
+      const active = all.filter((s: SessionInfo) => s.active);
+      setSessions(active);
     } catch {
       setSessionsError("Could not load sessions. Is the bridge running?");
     } finally {
@@ -446,7 +446,7 @@ export default function VoiceInterface() {
 
         <div className="flex-1 overflow-y-auto px-5 py-5">
           <p className="text-sm text-text-dim mb-4">
-            Choose a Claude Code session to talk to.
+            Active Claude Code sessions
           </p>
 
           {sessionsLoading && (
@@ -474,7 +474,8 @@ export default function VoiceInterface() {
 
           {!sessionsLoading && !sessionsError && sessions.length === 0 && (
             <div className="text-center py-12 text-text-dim text-sm">
-              <p>No sessions found.</p>
+              <p>No active Claude Code sessions found.</p>
+              <p className="mt-1 text-xs">Start Claude Code in a terminal to see it here.</p>
               <button
                 onClick={skipSessionPicker}
                 className="mt-3 text-accent hover:underline cursor-pointer"
