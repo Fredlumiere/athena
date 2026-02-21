@@ -330,19 +330,22 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
     let shouldInterrupt = false;
     let connSttModel = process.env.OPENAI_WHISPER_MODEL || "whisper-1";
 
-    ws.on("message", async (data: Buffer | string) => {
+    ws.on("message", async (data: Buffer | string, isBinary: boolean) => {
       let msg: { type: string; data?: string; text?: string };
 
-      if (typeof data === "string") {
+      if (isBinary) {
+        // Pure binary frame = audio chunk (e.g. WAV from VAD)
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+        msg = { type: "audio", data: buf.toString("base64") };
+      } else {
+        // Text frame — parse as JSON command
+        const str = Buffer.isBuffer(data) ? data.toString("utf-8") : String(data);
         try {
-          msg = JSON.parse(data);
+          msg = JSON.parse(str);
           console.log(`[ws/voice] Received: type=${msg.type}${msg.text ? ` text="${msg.text.slice(0, 80)}"` : ""}`);
         } catch {
           return;
         }
-      } else {
-        // Binary data = audio chunk
-        msg = { type: "audio", data: data.toString("base64") };
       }
 
       // Per-connection STT model config
