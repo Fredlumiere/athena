@@ -69,24 +69,14 @@ export function useElevenLabsProvider(
     cbRef.current.onStatusChange("connecting");
 
     try {
-      // Request mic permission
-      dbg.log("ElevenLabs: requesting mic...");
-      cbRef.current.onMessage({ role: "event", text: "Requesting microphone..." });
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const tracks = stream.getAudioTracks();
-        dbg.success(`Mic ready: ${tracks.length} track, ${tracks[0]?.label || "no label"}`);
-        stream.getTracks().forEach((t) => t.stop());
-        cbRef.current.onMessage({ role: "event", text: "Mic granted. Connecting to ElevenLabs..." });
-      } catch (micErr) {
-        const name = micErr instanceof Error ? micErr.name : "";
-        const msg = micErr instanceof Error ? micErr.message : String(micErr);
-        dbg.error(`Mic failed: ${name} — ${msg}`);
-        if (name === "NotAllowedError" || name === "PermissionDeniedError") {
-          cbRef.current.onError("Mic permission denied. Check Settings → Safari → Microphone.");
-        } else {
-          cbRef.current.onError(`Mic error: ${msg}`);
-        }
+      // Skip pre-checking mic — ElevenLabs SDK requests its own stream internally.
+      // Calling getUserMedia twice on iOS Safari can mute the second stream.
+      dbg.log("ElevenLabs: checking mic availability...");
+      cbRef.current.onMessage({ role: "event", text: "Connecting to ElevenLabs..." });
+
+      if (!navigator.mediaDevices?.getUserMedia) {
+        dbg.error("getUserMedia not available — not a secure context or in-app browser");
+        cbRef.current.onError("Microphone not available. Open this page in Safari.");
         cbRef.current.onStatusChange("disconnected");
         return;
       }
@@ -102,9 +92,19 @@ export function useElevenLabsProvider(
       dbg.success("ElevenLabs: session started");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      dbg.error(`ElevenLabs connect failed: ${msg}`);
+      const name = err instanceof Error ? err.name : "";
+      const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+      dbg.error(`ElevenLabs connect failed: ${name} — ${msg}`);
       cbRef.current.onStatusChange("disconnected");
-      cbRef.current.onError(msg);
+      if (name === "NotAllowedError" || msg.includes("Permission denied") || msg.includes("not allowed")) {
+        cbRef.current.onError(
+          isIOS
+            ? "Mic blocked. Check: Settings → Safari → Microphone. Also: Settings → Privacy → Microphone."
+            : "Mic permission denied. Allow microphone access and try again."
+        );
+      } else {
+        cbRef.current.onError(msg);
+      }
     }
   }, [conversation, selectedVoiceId]);
 

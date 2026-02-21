@@ -120,12 +120,23 @@ export default function VoiceInterface() {
       });
   }, []);
 
+  // ─── In-app browser detection (iOS WKWebView blocks getUserMedia) ───────
+  const [inAppWarning, setInAppWarning] = useState(false);
+  useEffect(() => {
+    const ua = navigator.userAgent || "";
+    const isIOS = /iPhone|iPad|iPod/.test(ua);
+    const hasSafari = /Safari\//.test(ua);
+    if (isIOS && !hasSafari) {
+      setInAppWarning(true);
+      debugLog.warn("In-app browser detected — mic access may be blocked. Open in Safari.");
+    }
+  }, []);
+
   // ─── Auto-run preflight checks on mount ─────────────────────────────────
   const preflightRan = useRef(false);
   useEffect(() => {
     if (preflightRan.current) return;
     preflightRan.current = true;
-    // Small delay to let bridgeUrl resolve
     const timer = setTimeout(() => {
       runPreflight(debugLog, bridgeUrl);
     }, 1500);
@@ -543,6 +554,16 @@ export default function VoiceInterface() {
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* In-app browser warning */}
+      {inAppWarning && (
+        <div className="bg-yellow-900/30 border-b border-yellow-600/40 px-5 py-3 text-sm text-yellow-200">
+          <p className="font-medium">Open in Safari</p>
+          <p className="text-xs text-yellow-300/80 mt-0.5">
+            Microphone requires Safari. Tap the share icon, then &quot;Open in Safari.&quot;
+          </p>
         </div>
       )}
 

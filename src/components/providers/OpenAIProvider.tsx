@@ -103,9 +103,18 @@ export function useOpenAIProvider(
       } catch (micErr) {
         const name = micErr instanceof Error ? micErr.name : "";
         const msg = micErr instanceof Error ? micErr.message : String(micErr);
-        dbg.error(`Mic request failed: ${name} — ${msg}`);
+        const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+        dbg.error(`Mic request failed: ${name} — ${msg} (iOS=${isIOS})`);
         if (name === "NotAllowedError" || name === "PermissionDeniedError") {
-          cbRef.current.onError("Mic permission denied. Check Settings → Safari → Microphone.");
+          cbRef.current.onError(
+            isIOS
+              ? "Mic blocked. Check: Settings → Safari → Microphone. Also: Settings → Privacy → Microphone → Safari."
+              : "Mic permission denied. Allow microphone access and try again."
+          );
+        } else if (name === "NotFoundError") {
+          cbRef.current.onError("No microphone found on this device.");
+        } else if (name === "NotReadableError") {
+          cbRef.current.onError("Microphone in use by another app. Close other apps and retry.");
         } else {
           cbRef.current.onError(`Mic error: ${msg}`);
         }
