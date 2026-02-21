@@ -6,6 +6,7 @@ import type { VoiceMessage, VoiceProviderStatus } from "./providers/types";
 import { useOpenAIProvider } from "./providers/OpenAIProvider";
 import TTSToggle, { type TTSProvider } from "./TTSToggle";
 import ProviderBadge from "./ProviderBadge";
+import { useDebugLog, DebugPanel, runPreflight, type DebugLogger } from "./DebugPanel";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -58,47 +59,78 @@ export default function VoiceInterface() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const thinkingSoundRef = useRef<HTMLAudioElement | null>(null);
 
+  // ─── Debug logger ─────────────────────────────────────────────────────
+  const debugLog = useDebugLog();
+
   // ─── Launcher auto-auth (skip PIN when launched via npm run athena) ─────
 
   useEffect(() => {
+    debugLog.log("Checking auth mode...");
     fetch("/api/auth/mode")
       .then((r) => r.json())
       .then((data) => {
         if (data.skipAuth) {
+          debugLog.success("Auth: skipped (launcher mode)");
           setPhase("voice");
+        } else {
+          debugLog.log("Auth: PIN required");
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        debugLog.error(`Auth check failed: ${err}`);
+      });
   }, []);
 
   // ─── Load TTS config ────────────────────────────────────────────────────
 
   useEffect(() => {
+    debugLog.log("Loading TTS config...");
     fetch("/api/tts-config")
       .then((r) => r.json())
       .then((data) => {
-        setElevenlabsAvailable(data.providers?.elevenlabs?.available ?? false);
-        setOpenaiAvailable(data.providers?.openai?.available ?? false);
+        const el = data.providers?.elevenlabs?.available ?? false;
+        const oai = data.providers?.openai?.available ?? false;
+        setElevenlabsAvailable(el);
+        setOpenaiAvailable(oai);
         if (data.bridgeToken) setBridgeToken(data.bridgeToken);
+
+        debugLog.log(`Providers: ElevenLabs=${el}, OpenAI=${oai}`);
 
         // Use current origin for bridge URL when accessed remotely (e.g. via ngrok)
         // The bridge serves both HTTP and WebSocket on the same port
         const isRemote = typeof window !== "undefined"
           && window.location.hostname !== "localhost"
           && window.location.hostname !== "127.0.0.1";
-        setBridgeUrl(isRemote ? window.location.origin : (data.bridgeUrl || "http://localhost:8013"));
+        const url = isRemote ? window.location.origin : (data.bridgeUrl || "http://localhost:8013");
+        setBridgeUrl(url);
+        debugLog.log(`Bridge URL: ${url} (remote=${isRemote})`);
 
         // If saved provider isn't available, fall back
         const saved = localStorage.getItem("athena-tts-provider") as TTSProvider | null;
-        if (saved === "openai" && !data.providers?.openai?.available) {
+        if (saved === "openai" && !oai) {
           setTtsProvider("elevenlabs");
-        } else if (saved === "elevenlabs" && !data.providers?.elevenlabs?.available) {
-          if (data.providers?.openai?.available) setTtsProvider("openai");
+          debugLog.warn("OpenAI saved but unavailable, falling back to ElevenLabs");
+        } else if (saved === "elevenlabs" && !el) {
+          if (oai) setTtsProvider("openai");
+          debugLog.warn("ElevenLabs saved but unavailable, falling back to OpenAI");
         }
       })
-      .catch(() => {
-        // Keep defaults
+      .catch((err) => {
+        debugLog.error(`TTS config failed: ${err}`);
       });
+  }, []);
+
+  // ─── Auto-run preflight checks on mount ─────────────────────────────────
+  const preflightRan = useRef(false);
+  useEffect(() => {
+    if (preflightRan.current) return;
+    preflightRan.current = true;
+    // Small delay to let bridgeUrl resolve
+    const timer = setTimeout(() => {
+      runPreflight(debugLog, bridgeUrl);
+    }, 1500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ─── Thinking sound ─────────────────────────────────────────────────────
@@ -162,7 +194,7 @@ export default function VoiceInterface() {
     setMessages((prev) => [...prev, { role: "event", text: `Error: ${error}` }]);
   }, []);
 
-  const callbacks = { onStatusChange, onMessage, onSpeakingChange, onThinkingChange, onError };
+  const callbacks = { onStatusChange, onMessage, onSpeakingChange, onThinkingChange, onError, debug: debugLog };
 
   // ─── Providers ──────────────────────────────────────────────────────────
 
@@ -256,14 +288,14 @@ export default function VoiceInterface() {
   };
 
   const startConversation = async () => {
-    setDebug(`Connecting via ${ttsProvider}...`);
+    debugLog.log(`Connecting via ${ttsProvider}...`);
     setMessages([{ role: "event", text: "Connecting..." }]);
     try {
       await activeProvider.connect();
-      setDebug("Connected!");
+      debugLog.success("Connected!");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setDebug(`ERROR: ${msg}`);
+      debugLog.error(`Connect failed: ${msg}`);
     }
   };
 
@@ -611,6 +643,12 @@ export default function VoiceInterface() {
         {!isConnected && !isConnecting && <span className="text-xs text-text-dim">Tap to connect</span>}
         {isConnecting && <span className="text-xs text-text-dim">Connecting...</span>}
       </div>
+
+      {/* Debug Panel */}
+      <DebugPanel
+        entries={debugLog.entries}
+        onRunPreflight={() => runPreflight(debugLog, bridgeUrl)}
+      />
     </div>
   );
 }

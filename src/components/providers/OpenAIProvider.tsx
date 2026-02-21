@@ -93,17 +93,21 @@ export function useOpenAIProvider(
     cbRef.current.onStatusChange("connecting");
 
     try {
-      // Request mic — log each step for mobile debugging
+      // Request mic
+      const dbg = cbRef.current.debug;
+      dbg.log("Requesting microphone...");
       cbRef.current.onMessage({ role: "event", text: "Requesting microphone..." });
       let stream: MediaStream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       } catch (micErr) {
         const name = micErr instanceof Error ? micErr.name : "";
+        const msg = micErr instanceof Error ? micErr.message : String(micErr);
+        dbg.error(`Mic request failed: ${name} — ${msg}`);
         if (name === "NotAllowedError" || name === "PermissionDeniedError") {
           cbRef.current.onError("Mic permission denied. Check Settings → Safari → Microphone.");
         } else {
-          cbRef.current.onError(`Mic error: ${micErr instanceof Error ? micErr.message : String(micErr)}`);
+          cbRef.current.onError(`Mic error: ${msg}`);
         }
         setStatus("disconnected");
         cbRef.current.onStatusChange("disconnected");
@@ -111,17 +115,25 @@ export function useOpenAIProvider(
       }
       streamRef.current = stream;
       const tracks = stream.getAudioTracks();
+      const trackInfo = `${tracks.length} track, ${tracks[0]?.enabled ? "enabled" : "disabled"}, ${tracks[0]?.label || "no label"}`;
+      dbg.success(`Mic ready: ${trackInfo}`);
       cbRef.current.onMessage({ role: "event", text: `Mic ready (${tracks.length} track, ${tracks[0]?.enabled ? "enabled" : "disabled"})` });
 
       // Create AudioContext for playback — must resume on iOS Safari
       const ctx = new AudioContext({ sampleRate: 24000 });
-      if (ctx.state === "suspended") await ctx.resume();
+      dbg.log(`AudioContext created: state=${ctx.state}, sampleRate=${ctx.sampleRate}`);
+      if (ctx.state === "suspended") {
+        dbg.log("AudioContext suspended, resuming...");
+        await ctx.resume();
+      }
       audioContextRef.current = ctx;
+      dbg.success(`AudioContext: ${ctx.state}, ${ctx.sampleRate}Hz`);
       cbRef.current.onMessage({ role: "event", text: `Audio: ${ctx.state}, ${ctx.sampleRate}Hz` });
 
       // Connect WebSocket with auth token
       const wsBase = bridgeUrl.replace(/^http/, "ws") + "/ws/voice";
       const wsUrl = bridgeToken ? `${wsBase}?token=${encodeURIComponent(bridgeToken)}` : wsBase;
+      dbg.log(`WebSocket: connecting to ${wsBase}`);
       cbRef.current.onMessage({ role: "event", text: `Connecting to bridge...` });
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
@@ -130,17 +142,23 @@ export function useOpenAIProvider(
         setStatus("connected");
         cbRef.current.onStatusChange("connected");
         isConnectedRef.current = true;
+        dbg.success("WebSocket connected");
         cbRef.current.onMessage({ role: "event", text: "WebSocket connected. Loading VAD..." });
 
         // Initialize VAD after WebSocket is ready
         try {
+          dbg.log("Importing @ricky0123/vad-web...");
           const { MicVAD } = await import("@ricky0123/vad-web");
+          dbg.log("MicVAD imported. Initializing with baseAssetPath=/");
           const vad = await MicVAD.new({
             // Serve VAD assets from public/ directory at root
             baseAssetPath: "/",
             onnxWASMBasePath: "/",
             // Force single-threaded WASM — mobile Safari lacks SharedArrayBuffer
-            ortConfig: (ort) => { ort.env.wasm.numThreads = 1; },
+            ortConfig: (ort) => {
+              ort.env.wasm.numThreads = 1;
+              dbg.log("ONNX: configured numThreads=1");
+            },
             getStream: async () => stream,
             positiveSpeechThreshold: 0.6,
             negativeSpeechThreshold: 0.3,
@@ -148,7 +166,7 @@ export function useOpenAIProvider(
             preSpeechPadMs: 500,
             redemptionMs: 800,
             onSpeechStart: () => {
-              // Visual feedback that mic is picking up speech
+              dbg.log("Speech detected");
               cbRef.current.onMessage({ role: "event", text: "Speech detected..." });
             },
             onSpeechEnd: (audio: Float32Array) => {
@@ -176,10 +194,15 @@ export function useOpenAIProvider(
           });
           vadRef.current = vad;
           vad.start();
+          dbg.success("VAD initialized and listening");
           cbRef.current.onMessage({ role: "event", text: "VAD ready — speak now!" });
         } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const stack = err instanceof Error ? err.stack : "";
+          dbg.error(`VAD init failed: ${msg}`);
+          if (stack) dbg.error(`Stack: ${stack.slice(0, 300)}`);
           console.error("[OpenAI] VAD init error:", err);
-          cbRef.current.onError(`VAD failed: ${err instanceof Error ? err.message : String(err)}`);
+          cbRef.current.onError(`VAD failed: ${msg}`);
         }
       };
 
@@ -230,17 +253,17 @@ export function useOpenAIProvider(
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
+        dbg.warn(`WebSocket closed: code=${ev.code} reason=${ev.reason || "none"} clean=${ev.wasClean}`);
         if (isConnectedRef.current) {
-          // Unexpected disconnect — try to reconnect
           isConnectedRef.current = false;
           cbRef.current.onMessage({ role: "event", text: "Connection lost. Reconnecting..." });
           setStatus("connecting");
           cbRef.current.onStatusChange("connecting");
           cleanup();
-          // Reconnect after a short delay
           setTimeout(() => {
             if (!isConnectedRef.current && wsRef.current === null) {
+              dbg.log("Attempting reconnect...");
               connect();
             }
           }, 2000);
@@ -251,7 +274,8 @@ export function useOpenAIProvider(
         }
       };
 
-      ws.onerror = () => {
+      ws.onerror = (ev) => {
+        dbg.error(`WebSocket error: ${ev}`);
         cbRef.current.onError("WebSocket connection failed");
       };
     } catch (err) {
