@@ -36,6 +36,7 @@ export default function VoiceInterface() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionsError, setSessionsError] = useState("");
+  const [activeSession, setActiveSession] = useState<SessionInfo | null>(null);
 
   // Voice state
   const [messages, setMessages] = useState<VoiceMessage[]>([]);
@@ -73,6 +74,7 @@ export default function VoiceInterface() {
   const debugLog = useDebugLog();
 
   // ─── Launcher auto-auth (skip PIN when launched via npm run athena) ─────
+  const [launcherMode, setLauncherMode] = useState(false);
 
   useEffect(() => {
     debugLog.log("Checking auth mode...");
@@ -81,7 +83,9 @@ export default function VoiceInterface() {
       .then((data) => {
         if (data.skipAuth) {
           debugLog.success("Auth: skipped (launcher mode)");
-          setPhase("voice");
+          setLauncherMode(true);
+          setPhase("sessions");
+          loadSessions();
         } else {
           debugLog.log("Auth: PIN required");
         }
@@ -301,6 +305,7 @@ export default function VoiceInterface() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: session.id, cwd: session.cwd }),
       });
+      setActiveSession(session);
       setPhase("voice");
     } catch {
       setSessionsError("Failed to select session");
@@ -413,14 +418,16 @@ export default function VoiceInterface() {
       <div className="flex flex-col h-dvh max-w-xl mx-auto">
         <header className="flex items-center justify-between px-5 py-4 border-b border-border">
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setPhase("auth")}
-              aria-label="Back to login"
-              className="text-text-dim hover:text-white transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-            >
-              <BackIcon />
-            </button>
-            <h1 className="text-lg font-semibold tracking-tight">Sessions</h1>
+            {!launcherMode && (
+              <button
+                onClick={() => setPhase("auth")}
+                aria-label="Back to login"
+                className="text-text-dim hover:text-white transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+              >
+                <BackIcon />
+              </button>
+            )}
+            <h1 className="text-lg font-semibold tracking-tight">Athena</h1>
           </div>
           <button
             onClick={skipSessionPicker}
@@ -432,7 +439,7 @@ export default function VoiceInterface() {
 
         <div className="flex-1 overflow-y-auto px-5 py-5">
           <p className="text-sm text-text-dim mb-4">
-            Select a Claude Code session to resume, or skip to start fresh.
+            Choose a Claude Code session to talk to.
           </p>
 
           {sessionsLoading && (
@@ -476,28 +483,38 @@ export default function VoiceInterface() {
                 {project}
               </h2>
               <div className="flex flex-col gap-2">
-                {projectSessions.map((session) => (
-                  <button
-                    key={session.id}
-                    onClick={() => selectSession(session)}
-                    className="text-left px-4 py-3 rounded-xl bg-surface border border-border hover:border-accent/40 transition-all cursor-pointer group"
-                  >
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs font-mono text-text-dim group-hover:text-accent transition-colors">
-                        {session.id.slice(0, 8)}...
-                      </span>
-                      <span className="text-[10px] text-text-dim">
-                        {formatTimestamp(session.timestamp)}
-                      </span>
-                    </div>
-                    <p className="text-sm text-text truncate">{session.lastMessage}</p>
-                    {session.cwd !== "unknown" && (
-                      <p className="text-[10px] text-text-dim mt-1 font-mono truncate">
-                        {session.cwd}
-                      </p>
-                    )}
-                  </button>
-                ))}
+                {projectSessions.map((session) => {
+                  const folderName = session.cwd !== "unknown" ? session.cwd.split("/").pop() : null;
+                  return (
+                    <button
+                      key={session.id}
+                      onClick={() => selectSession(session)}
+                      className="text-left px-4 py-3 rounded-xl bg-surface border border-border hover:border-accent/40 transition-all cursor-pointer group"
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                          {folderName && (
+                            <span className="text-sm font-medium text-text group-hover:text-accent transition-colors">
+                              {folderName}
+                            </span>
+                          )}
+                          <span className="text-[10px] font-mono text-text-dim">
+                            {session.id.slice(0, 8)}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-text-dim">
+                          {formatTimestamp(session.timestamp)}
+                        </span>
+                      </div>
+                      <p className="text-sm text-text-dim truncate">{session.lastMessage}</p>
+                      {session.cwd !== "unknown" && (
+                        <p className="text-[10px] text-text-dim/60 mt-1 font-mono truncate">
+                          {session.cwd}
+                        </p>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           ))}
@@ -524,6 +541,11 @@ export default function VoiceInterface() {
           )}
           <h1 className="text-lg font-semibold tracking-tight">Athena</h1>
           {isConnected && <ProviderBadge provider={ttsProvider} />}
+          {activeSession && (
+            <span className="text-xs text-text-dim font-mono truncate max-w-[140px]">
+              {activeSession.cwd !== "unknown" ? activeSession.cwd.split("/").pop() : activeSession.id.slice(0, 8)}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2 text-sm text-text-dim">
           <div
