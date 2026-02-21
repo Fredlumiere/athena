@@ -1071,6 +1071,25 @@ app.get("/api/auth/mode", (_req, res) => {
   res.json({ skipAuth: !ATHENA_PIN && !!ATHENA_TOKEN });
 });
 
+// Auth: verify PIN or remember-me token
+import { createHash } from "crypto";
+const PIN_TOKEN = ATHENA_PIN
+  ? createHash("sha256").update(`athena:${ATHENA_PIN}`).digest("hex").slice(0, 32)
+  : "";
+
+app.post("/api/auth", (req, res) => {
+  const { pin, token } = req.body || {};
+  if (token && token === PIN_TOKEN) {
+    res.json({ ok: true, token: PIN_TOKEN });
+    return;
+  }
+  if (pin && pin === ATHENA_PIN) {
+    res.json({ ok: true, token: PIN_TOKEN });
+    return;
+  }
+  res.status(401).json({ ok: false, error: "Incorrect code" });
+});
+
 // ─── Reverse proxy to Next.js for non-bridge routes ─────────────────────────
 
 import { createProxyMiddleware } from "http-proxy-middleware";

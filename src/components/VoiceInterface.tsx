@@ -406,7 +406,6 @@ export default function VoiceInterface() {
   if (phase === "auth") {
     return (
       <div className="flex flex-col h-dvh max-w-xl mx-auto items-center justify-center px-8">
-        <h1 className="text-2xl font-semibold tracking-tight mb-8">Nova</h1>
         <input
           type="password"
           inputMode="numeric"
