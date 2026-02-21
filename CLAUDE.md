@@ -34,12 +34,11 @@ Phone (Next.js PWA) → ngrok → Bridge (Express :8013) → Claude Agent SDK
 
 ## Git Workflow
 
-### Branching
+### Workflow
 
-- `main` — production-ready, always passes `npm run build`
-- Feature branches: `feat/<short-description>`
-- Bug fixes: `fix/<short-description>`
-- Never push directly to `main` — always use PRs
+- Commit and push directly to `main`
+- `main` must always pass `npm run build`
+- No branches or PRs — keep it simple
 
 ### Commits
 
@@ -49,18 +48,6 @@ feat: add session picker voice feedback
 fix: active session detection using file recency
 refactor: extract TTS pipeline into module
 ```
-
-### Pull Requests
-
-- Every change gets a PR on GitHub (`Fredlumiere/athena`)
-- PR body must include: Summary (bullet points), Test plan (checklist)
-- Use `gh pr create` — don't push to main directly
-
-### Issues
-
-- File GitHub issues for bugs, features, and technical debt
-- Reference issues in PR descriptions when applicable
-- Use labels: `bug`, `feature`, `refactor`, `voice`, `bridge`, `frontend`
 
 ## Commands
 
