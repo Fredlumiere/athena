@@ -19,6 +19,7 @@ loadEnv({ path: path.resolve(__dirname, "..", ".env.local") });
 const NEXT_PORT = 3001;
 const BRIDGE_PORT = 8013;
 const NGROK_API = "http://127.0.0.1:4040/api/tunnels";
+const NGROK_DOMAIN = process.env.NGROK_DOMAIN || "athena-voice.ngrok-free.app";
 const TOKEN = randomUUID();
 
 const children: ChildProcess[] = [];
@@ -282,9 +283,9 @@ async function main() {
     log(`Reusing existing ngrok tunnel: ${publicUrl}`);
     ngrokExisted = true;
   } catch {
-    // No existing tunnel — start a new one
-    log("Starting ngrok tunnel...");
-    const ngrok = spawn("ngrok", ["http", String(BRIDGE_PORT)], {
+    // No existing tunnel — start a new one with static domain
+    log(`Starting ngrok tunnel (${NGROK_DOMAIN})...`);
+    const ngrok = spawn("ngrok", ["http", String(BRIDGE_PORT), "--url", NGROK_DOMAIN], {
       stdio: ["ignore", "ignore", "pipe"],
     });
     children.push(ngrok);
