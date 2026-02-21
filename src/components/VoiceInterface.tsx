@@ -406,7 +406,7 @@ export default function VoiceInterface() {
   if (phase === "auth") {
     return (
       <div className="flex flex-col h-dvh max-w-xl mx-auto items-center justify-center px-8">
-        <h1 className="text-2xl font-semibold tracking-tight mb-8">Athena</h1>
+        <h1 className="text-2xl font-semibold tracking-tight mb-8">Nova</h1>
         <input
           type="password"
           inputMode="numeric"
@@ -448,7 +448,7 @@ export default function VoiceInterface() {
       <div className="flex flex-col h-dvh max-w-xl mx-auto">
         <header className="flex items-center justify-between px-5 py-4 border-b border-border">
           <div className="flex items-center gap-2">
-            <h1 className="text-lg font-semibold tracking-tight">Athena</h1>
+            <h1 className="text-lg font-semibold tracking-tight">Nova</h1>
           </div>
           <button
             onClick={skipSessionPicker}
@@ -561,7 +561,7 @@ export default function VoiceInterface() {
               <BackIcon />
             </button>
           )}
-          <h1 className="text-lg font-semibold tracking-tight">Athena</h1>
+          <h1 className="text-lg font-semibold tracking-tight">Nova</h1>
           {isConnected && <ProviderBadge provider={ttsProvider} />}
         </div>
         <div className="flex items-center gap-2 text-sm text-text-dim">
@@ -665,7 +665,7 @@ export default function VoiceInterface() {
       {/* Voice selector dropdown (ElevenLabs) */}
       {showVoices && !isConnected && ttsProvider === "elevenlabs" && (
         <div className="border-b border-border bg-surface/80 backdrop-blur px-5 py-3 animate-fade-in">
-          <p className="text-xs text-text-dim mb-2">Choose Athena&apos;s voice</p>
+          <p className="text-xs text-text-dim mb-2">Choose Nova&apos;s voice</p>
           <div className="grid grid-cols-2 gap-2">
             {VOICES.map((voice) => (
               <button
@@ -702,7 +702,7 @@ export default function VoiceInterface() {
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-5 flex flex-col gap-4" role="log" aria-label="Conversation messages" aria-live="polite">
         {messages.length === 0 && !isConnected && (
           <div className="flex-1 flex items-center justify-center text-text-dim text-center px-8">
-            <p>Tap the button below to connect with Athena.</p>
+            <p>Tap the button below to connect with Nova.</p>
           </div>
         )}
 
@@ -731,7 +731,7 @@ export default function VoiceInterface() {
 
         {/* Thinking indicator */}
         {thinking && (
-          <div className="self-start animate-fade-in flex items-center gap-2 text-text-dim text-sm px-2" role="status" aria-label="Athena is thinking">
+          <div className="self-start animate-fade-in flex items-center gap-2 text-text-dim text-sm px-2" role="status" aria-label="Nova is thinking">
             <div className="flex gap-1" aria-hidden="true">
               <span
                 className="w-1.5 h-1.5 rounded-full animate-bounce [animation-delay:0ms]"
@@ -746,7 +746,7 @@ export default function VoiceInterface() {
                 style={{ backgroundColor: providerColor }}
               />
             </div>
-            Athena is thinking...
+            Nova is thinking...
           </div>
         )}
       </div>
@@ -783,7 +783,7 @@ export default function VoiceInterface() {
               />
               <button
                 onClick={endConversation}
-                aria-label={isSpeaking ? "Athena is speaking. Tap to disconnect." : thinking ? "Athena is thinking. Tap to disconnect." : "Listening. Tap to disconnect."}
+                aria-label={isSpeaking ? "Nova is speaking. Tap to disconnect." : thinking ? "Nova is thinking. Tap to disconnect." : "Listening. Tap to disconnect."}
                 className={`relative w-16 h-16 rounded-full text-white flex items-center justify-center transition-all cursor-pointer z-10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
                   isSpeaking
                     ? providerClass
@@ -798,7 +798,7 @@ export default function VoiceInterface() {
               </button>
             </div>
             <span className="text-xs text-text-dim" aria-live="polite">
-              {isSpeaking ? "Athena is speaking" : thinking ? "Thinking..." : userSpeaking ? "Hearing you..." : "Listening..."}
+              {isSpeaking ? "Nova is speaking" : thinking ? "Thinking..." : userSpeaking ? "Hearing you..." : "Listening..."}
             </span>
           </div>
         )}

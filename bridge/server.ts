@@ -115,7 +115,7 @@ function getStreamDeltaText(message: SDKMessage): string | null {
   return delta.text;
 }
 
-const SYSTEM_PROMPT = `You are Athena, an elite AI executive assistant. You speak in a warm, confident, concise voice. You have full access to the codebase and development tools.
+const SYSTEM_PROMPT = `You are Nova, an elite AI executive assistant. You speak in a warm, confident, concise voice. You have full access to the codebase and development tools.
 
 Key behaviors:
 - Keep responses SHORT and conversational (1-3 sentences for voice)
@@ -125,7 +125,7 @@ Key behaviors:
 - If a task is complex, give a brief status then do the work
 - Never say "I'll help you with that" or similar filler. Just do it.
 
-You are the founder's right hand. He calls you Athena. Be sharp, capable, and concise.`;
+You are the founder's right hand. He calls you Nova. Be sharp, capable, and concise.`;
 
 // ─── Conversation Logging Helpers ─────────────────────────────────────────────
 
@@ -849,7 +849,7 @@ app.post("/v1/chat/completions", async (req, res) => {
                   id: responseId,
                   object: "chat.completion.chunk",
                   created: Math.floor(Date.now() / 1000),
-                  model: "athena",
+                  model: "nova",
                   choices: [
                     {
                       index: 0,
@@ -869,7 +869,7 @@ app.post("/v1/chat/completions", async (req, res) => {
                 id: responseId,
                 object: "chat.completion.chunk",
                 created: Math.floor(Date.now() / 1000),
-                model: "athena",
+                model: "nova",
                 choices: [
                   {
                     index: 0,
@@ -895,7 +895,7 @@ app.post("/v1/chat/completions", async (req, res) => {
                 id: responseId,
                 object: "chat.completion.chunk",
                 created: Math.floor(Date.now() / 1000),
-                model: "athena",
+                model: "nova",
                 choices: [
                   {
                     index: 0,
@@ -914,7 +914,7 @@ app.post("/v1/chat/completions", async (req, res) => {
             id: responseId,
             object: "chat.completion.chunk",
             created: Math.floor(Date.now() / 1000),
-            model: "athena",
+            model: "nova",
             choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
           };
           res.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
@@ -938,7 +938,7 @@ app.post("/v1/chat/completions", async (req, res) => {
         id: responseId,
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
-        model: "athena",
+        model: "nova",
         choices: [
           {
             index: 0,
@@ -956,7 +956,7 @@ app.post("/v1/chat/completions", async (req, res) => {
           id: responseId,
           object: "chat.completion.chunk",
           created: Math.floor(Date.now() / 1000),
-          model: "athena",
+          model: "nova",
           choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
         })}\n\n`
       );
@@ -1018,7 +1018,7 @@ app.post("/v1/chat/completions", async (req, res) => {
         id: `chatcmpl-${Date.now()}`,
         object: "chat.completion",
         created: Math.floor(Date.now() / 1000),
-        model: "athena",
+        model: "nova",
         choices: [
           {
             index: 0,
@@ -1093,7 +1093,7 @@ const wss = setupWebSocket(server);
 
 const BIND_HOST = process.env.BRIDGE_HOST || "0.0.0.0";
 server.listen(PORT, BIND_HOST, () => {
-  console.log(`[bridge] Athena LLM bridge running on http://localhost:${PORT}`);
+  console.log(`[bridge] Nova LLM bridge running on http://localhost:${PORT}`);
   console.log(`[bridge] Proxying to Next.js at ${NEXTJS_URL}`);
   console.log(`[bridge] Endpoints:`);
   console.log(`  POST http://localhost:${PORT}/v1/chat/completions`);

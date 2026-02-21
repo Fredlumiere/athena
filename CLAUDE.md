@@ -1,8 +1,8 @@
-# Athena — Project Conventions
+# Nova — Project Conventions
 
 ## What This Is
 
-Athena is an AI voice assistant that connects ElevenLabs voice to Claude Code via an Express bridge. Users speak from their phone; Athena processes speech, routes to Claude Agent SDK, and speaks back.
+Nova is an AI voice assistant that connects ElevenLabs voice to Claude Code via an Express bridge. Users speak from their phone; Nova processes speech, routes to Claude Agent SDK, and speaks back.
 
 ## Architecture
 
@@ -67,7 +67,7 @@ Before reporting any change as done:
 
 ## Team Workflow
 
-This project uses the Athena team of specialized agents. All work is coordinated through Athena (`/athena`). Key agents:
+This project uses the Nova team of specialized agents. All work is coordinated through Nova (`/athena`). Key agents:
 
 - **Max** (`/max`) — Code implementation, bug fixes, refactoring
 - **Dan** (`/dan`) — DevOps, build pipeline, infrastructure
@@ -83,7 +83,6 @@ This project uses the Athena team of specialized agents. All work is coordinated
 - Mobile/voice/audio changes → Rio must review before done
 - New dependencies or infra changes → Dan must review
 - Architecture decisions → Sam weighs in first
-- All work → filed as GitHub issues/PRs
 
 ## Environment
 

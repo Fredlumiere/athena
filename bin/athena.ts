@@ -191,7 +191,7 @@ async function updateElevenLabsAgentUrl(ngrokUrl: string) {
 
 async function main() {
   console.log();
-  log("Starting Athena...");
+  log("Starting Nova...");
   console.log();
 
   // 1. Detect session
