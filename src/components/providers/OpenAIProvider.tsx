@@ -120,6 +120,30 @@ export function useOpenAIProvider(
       audioContextRef.current = ctx;
       dbg.success(`AudioContext: ${ctx.state}, ${ctx.sampleRate}Hz`);
 
+      // Request mic permission NOW (iOS Safari requires this in user gesture context)
+      cbRef.current.onMessage({ role: "event", text: "Requesting microphone..." });
+      dbg.log("Pre-requesting mic permission (iOS Safari requirement)...");
+      let micStream: MediaStream;
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+        dbg.success("Mic permission granted ✓");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        dbg.error(`Mic permission denied: ${msg}`);
+        cbRef.current.onError(
+          "Microphone access denied. Please allow mic access in your browser settings."
+        );
+        setStatus("disconnected");
+        cbRef.current.onStatusChange("disconnected");
+        return;
+      }
+
       // Connect WebSocket
       const wsBase = bridgeUrl.replace(/^http/, "ws") + "/ws/voice";
       const wsUrl = bridgeToken ? `${wsBase}?token=${encodeURIComponent(bridgeToken)}` : wsBase;
@@ -149,12 +173,17 @@ export function useOpenAIProvider(
           const vad = await MicVAD.new({
             baseAssetPath: "/",
             onnxWASMBasePath: "/",
+            // Pass pre-created AudioContext and pre-requested mic stream
+            audioContext: ctx,
+            getStream: () => Promise.resolve(micStream),
             // iOS Safari: single-threaded WASM required
             ortConfig: (ort: Record<string, unknown>) => {
               const env = ort.env as Record<string, unknown>;
               const wasm = env.wasm as Record<string, unknown>;
               wasm.numThreads = 1;
             },
+            // Lower threshold for mobile mics (default 0.8 too high)
+            positiveSpeechThreshold: 0.6,
             onSpeechStart: () => {
               dbg.log("Speech detected");
               cbRef.current.onMessage({ role: "event", text: "Listening..." });
