@@ -19,7 +19,7 @@ loadEnv({ path: path.resolve(__dirname, "..", ".env.local") });
 const NEXT_PORT = 3001;
 const BRIDGE_PORT = 8013;
 const NGROK_API = "http://127.0.0.1:4040/api/tunnels";
-const NGROK_DOMAIN = process.env.NGROK_DOMAIN || "athena-voice.ngrok-free.app";
+const NGROK_DOMAIN = process.env.NGROK_DOMAIN || "athena-voice.ngrok.app";
 const TOKEN = randomUUID();
 
 const children: ChildProcess[] = [];
@@ -163,7 +163,7 @@ async function updateElevenLabsAgentUrl(ngrokUrl: string) {
         conversation_config: {
           agent: {
             prompt: {
-              llm: promptConfig?.llm || "custom_llm",
+              llm: promptConfig?.llm || "custom-llm",
               custom_llm: {
                 ...existingCustomLlm,
                 url: newUrl,
