@@ -5,6 +5,8 @@ import { useElevenLabsProvider, VOICES } from "./providers/ElevenLabsProvider";
 import type { VoiceMessage, VoiceProviderStatus } from "./providers/types";
 import { useOpenAIProvider } from "./providers/OpenAIProvider";
 import TTSToggle, { type TTSProvider } from "./TTSToggle";
+import STTToggle from "./STTToggle";
+import type { STTModel } from "./providers/OpenAIProvider";
 import ProviderBadge from "./ProviderBadge";
 import { useDebugLog, DebugPanel, runPreflight, type DebugLogger } from "./DebugPanel";
 
@@ -39,6 +41,8 @@ export default function VoiceInterface() {
   const [messages, setMessages] = useState<VoiceMessage[]>([]);
   const [thinking, setThinking] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [interimText, setInterimText] = useState("");
+  const [userSpeaking, setUserSpeaking] = useState(false);
   const [providerStatus, setProviderStatus] = useState<VoiceProviderStatus>("disconnected");
   const [showVoices, setShowVoices] = useState(false);
   const [selectedVoice, setSelectedVoice] = useState(VOICES[0]);
@@ -50,6 +54,12 @@ export default function VoiceInterface() {
       return (localStorage.getItem("athena-tts-provider") as TTSProvider) || "elevenlabs";
     }
     return "elevenlabs";
+  });
+  const [sttModel, setSttModel] = useState<STTModel>(() => {
+    if (typeof window !== "undefined") {
+      return (localStorage.getItem("athena-stt-model") as STTModel) || "whisper-1";
+    }
+    return "whisper-1";
   });
   const [elevenlabsAvailable, setElevenlabsAvailable] = useState(true);
   const [openaiAvailable, setOpenaiAvailable] = useState(false);
@@ -175,10 +185,19 @@ export default function VoiceInterface() {
   }, [stopThinkingSound]);
 
   const onMessage = useCallback((msg: VoiceMessage) => {
+    if (msg.role === "interim") {
+      // Live speech-to-text — update display, don't add to messages
+      setInterimText(msg.text);
+      setUserSpeaking(true);
+      return;
+    }
     if (msg.role === "user") {
+      setInterimText(""); // Clear interim when final transcript arrives
+      setUserSpeaking(false);
       setThinking(true);
     } else if (msg.role === "assistant") {
       setThinking(false);
+      setUserSpeaking(false);
     }
     setMessages((prev) => {
       const next = [...prev, msg];
@@ -210,7 +229,7 @@ export default function VoiceInterface() {
   // ─── Providers ──────────────────────────────────────────────────────────
 
   const elevenlabs = useElevenLabsProvider(callbacks, selectedVoice.id);
-  const openaiProvider = useOpenAIProvider(callbacks, bridgeUrl, bridgeToken);
+  const openaiProvider = useOpenAIProvider(callbacks, bridgeUrl, bridgeToken, sttModel);
 
   const activeProvider = ttsProvider === "elevenlabs" ? elevenlabs : openaiProvider;
   const isConnected = providerStatus === "connected";
@@ -296,6 +315,12 @@ export default function VoiceInterface() {
     if (isConnected) return; // Don't switch while connected
     setTtsProvider(p);
     localStorage.setItem("athena-tts-provider", p);
+  };
+
+  const handleSTTModelChange = (m: STTModel) => {
+    if (isConnected) return;
+    setSttModel(m);
+    localStorage.setItem("athena-stt-model", m);
   };
 
   const startConversation = async () => {
@@ -510,23 +535,32 @@ export default function VoiceInterface() {
         </div>
       </header>
 
-      {/* TTS Toggle + Voice selector */}
+      {/* TTS Toggle + Voice selector + STT model */}
       {!isConnected && (
-        <div className="border-b border-border bg-surface/50 px-5 py-3 flex items-center justify-between">
-          <TTSToggle
-            provider={ttsProvider}
-            onChange={handleProviderChange}
-            disabled={isConnected}
-            elevenlabsAvailable={elevenlabsAvailable}
-            openaiAvailable={openaiAvailable}
-          />
-          {ttsProvider === "elevenlabs" && (
-            <button
-              onClick={() => setShowVoices(!showVoices)}
-              className="text-xs text-text-dim hover:text-white transition-colors cursor-pointer"
-            >
-              Voice: {selectedVoice.name}
-            </button>
+        <div className="border-b border-border bg-surface/50 px-5 py-3 flex flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <TTSToggle
+              provider={ttsProvider}
+              onChange={handleProviderChange}
+              disabled={isConnected}
+              elevenlabsAvailable={elevenlabsAvailable}
+              openaiAvailable={openaiAvailable}
+            />
+            {ttsProvider === "elevenlabs" && (
+              <button
+                onClick={() => setShowVoices(!showVoices)}
+                className="text-xs text-text-dim hover:text-white transition-colors cursor-pointer"
+              >
+                Voice: {selectedVoice.name}
+              </button>
+            )}
+          </div>
+          {ttsProvider === "openai" && (
+            <STTToggle
+              model={sttModel}
+              onChange={handleSTTModelChange}
+              disabled={isConnected}
+            />
           )}
         </div>
       )}
@@ -591,6 +625,13 @@ export default function VoiceInterface() {
           </div>
         ))}
 
+        {/* Live interim transcript */}
+        {interimText && (
+          <div className="self-end animate-fade-in max-w-[85%] px-4 py-3 rounded-2xl rounded-br-sm text-[15px] leading-relaxed bg-accent/40 text-white/70 italic">
+            {interimText}
+          </div>
+        )}
+
         {/* Thinking indicator */}
         {thinking && (
           <div className="self-start animate-fade-in flex items-center gap-2 text-text-dim text-sm px-2" role="status" aria-label="Athena is thinking">
@@ -638,6 +679,8 @@ export default function VoiceInterface() {
                     ? `${providerGlowClass} animate-pulse-ring`
                     : thinking
                     ? `${providerDimClass} animate-pulse`
+                    : userSpeaking
+                    ? "bg-orange-500/30 animate-pulse-ring"
                     : "bg-listening/20 animate-pulse-ring"
                 }`}
               />
@@ -649,6 +692,8 @@ export default function VoiceInterface() {
                     ? providerClass
                     : thinking
                     ? "bg-text-dim"
+                    : userSpeaking
+                    ? "bg-orange-500"
                     : "bg-listening"
                 }`}
               >
@@ -656,7 +701,7 @@ export default function VoiceInterface() {
               </button>
             </div>
             <span className="text-xs text-text-dim" aria-live="polite">
-              {isSpeaking ? "Athena is speaking" : thinking ? "Thinking..." : "Listening..."}
+              {isSpeaking ? "Athena is speaking" : thinking ? "Thinking..." : userSpeaking ? "Hearing you..." : "Listening..."}
             </span>
           </div>
         )}

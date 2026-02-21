@@ -26,6 +26,10 @@ app.use((_req, res, next) => {
   res.header("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  // Enable SharedArrayBuffer for ONNX Runtime WASM (needed by VAD on iOS Safari)
+  // credentialless allows cross-origin resources (ElevenLabs WebRTC) without breaking
+  res.header("Cross-Origin-Opener-Policy", "same-origin");
+  res.header("Cross-Origin-Embedder-Policy", "credentialless");
   if (_req.method === "OPTIONS") {
     res.sendStatus(204);
     return;
@@ -324,19 +328,48 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
     let audioChunks: Buffer[] = [];
     let isProcessing = false;
     let shouldInterrupt = false;
+    let connSttModel = process.env.OPENAI_WHISPER_MODEL || "whisper-1";
 
     ws.on("message", async (data: Buffer | string) => {
-      let msg: { type: string; data?: string };
+      let msg: { type: string; data?: string; text?: string };
 
       if (typeof data === "string") {
         try {
           msg = JSON.parse(data);
+          console.log(`[ws/voice] Received: type=${msg.type}${msg.text ? ` text="${msg.text.slice(0, 80)}"` : ""}`);
         } catch {
           return;
         }
       } else {
         // Binary data = audio chunk
         msg = { type: "audio", data: data.toString("base64") };
+      }
+
+      // Per-connection STT model config
+      if (msg.type === "config") {
+        const m = (msg as Record<string, unknown>).sttModel;
+        if (m === "whisper-1" || m === "gpt-4o-mini-transcribe") {
+          connSttModel = m;
+          console.log(`[ws/voice] STT model set to: ${connSttModel}`);
+        }
+        return;
+      }
+
+      // Text-based input (from browser SpeechRecognition) — skip Whisper
+      if (msg.type === "text" && msg.text) {
+        if (isProcessing) return;
+        isProcessing = true;
+        shouldInterrupt = false;
+
+        try {
+          await processTextTurn(ws, msg.text);
+        } catch (err) {
+          console.error("[ws/voice] Error:", err);
+          sendJson(ws, { type: "error", message: "Processing failed" });
+        }
+
+        isProcessing = false;
+        return;
       }
 
       if (msg.type === "audio" && msg.data) {
@@ -362,9 +395,112 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
       }
     });
 
-    ws.on("close", () => {
-      console.log("[ws/voice] Client disconnected");
+    ws.on("close", (code, reason) => {
+      console.log(`[ws/voice] Client disconnected: code=${code} reason=${reason?.toString() || "none"}`);
     });
+
+    async function processTextTurn(ws: WebSocket, transcript: string) {
+      console.log(`[ws/voice] User (text): ${transcript}`);
+      sendJson(ws, { type: "transcript", text: transcript });
+
+      // Go straight to Claude (skip Whisper STT)
+      const cwd = connSessionCwd || process.env.ATHENA_CWD || process.cwd();
+      const resumeId = connSessionId || sessions.get("default");
+
+      let fullText = "";
+      try {
+        const result = query({
+          prompt: transcript,
+          options: {
+            systemPrompt: SYSTEM_PROMPT,
+            cwd,
+            model: process.env.ATHENA_MODEL || "claude-sonnet-4-5-20250929",
+            permissionMode: "bypassPermissions",
+            allowDangerouslySkipPermissions: true,
+            ...(resumeId ? { resume: resumeId } : {}),
+            maxTurns: 25,
+            tools: { type: "preset", preset: "claude_code" },
+            settingSources: ["project", "user"],
+          },
+        });
+
+        for await (const message of result) {
+          if (shouldInterrupt) break;
+
+          const sid = getSessionId(message);
+          if (sid) {
+            connSessionId = sid;
+            sessions.set("default", connSessionId);
+          }
+
+          const content = getAssistantContent(message);
+          if (content) {
+            const hasToolUse = content.some((block) => block.type === "tool_use");
+            if (!hasToolUse) {
+              const text = content
+                .filter((block) => block.type === "text")
+                .map((block) => block.text || "")
+                .join("");
+              if (text) fullText = text;
+            }
+          }
+
+          const resultText = getResultText(message);
+          if (!fullText && resultText) {
+            fullText = resultText;
+          }
+        }
+      } catch (err) {
+        console.error("[ws/voice] Claude error:", err);
+        fullText = "Sorry, I hit an error. Try again.";
+      }
+
+      if (!fullText) fullText = "I completed the task.";
+      if (shouldInterrupt) return;
+
+      console.log(`[ws/voice] Athena: ${fullText.slice(0, 100)}...`);
+      sendJson(ws, { type: "response_text", text: fullText });
+
+      // TTS
+      if (!openai) return;
+      const sentences = splitSentences(fullText);
+      const ttsModel = process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts";
+      const ttsVoice = (process.env.OPENAI_TTS_VOICE || "coral") as "coral" | "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer";
+
+      for (const sentence of sentences) {
+        if (shouldInterrupt) break;
+        if (!sentence.trim()) continue;
+
+        try {
+          const ttsResponse = await openai.audio.speech.create({
+            model: ttsModel,
+            voice: ttsVoice,
+            input: sentence,
+            response_format: "pcm",
+          });
+
+          const arrayBuf = await ttsResponse.arrayBuffer();
+          const pcmBuffer = Buffer.from(arrayBuf);
+
+          const CHUNK_SIZE = 4096;
+          for (let i = 0; i < pcmBuffer.length; i += CHUNK_SIZE) {
+            if (shouldInterrupt) break;
+            const chunk = pcmBuffer.subarray(i, Math.min(i + CHUNK_SIZE, pcmBuffer.length));
+            sendJson(ws, {
+              type: "audio_chunk",
+              data: chunk.toString("base64"),
+              sampleRate: 24000,
+              channels: 1,
+              bitDepth: 16,
+            });
+          }
+        } catch (err) {
+          console.error("[ws/voice] TTS error for sentence:", err);
+        }
+      }
+
+      sendJson(ws, { type: "tts_end" });
+    }
 
     async function processVoiceTurn(ws: WebSocket, audioBuffer: Buffer) {
       if (!openai) {
@@ -372,8 +508,8 @@ function setupWebSocket(server: ReturnType<typeof createServer>) {
         return;
       }
 
-      // 1. Whisper STT
-      const whisperModel = process.env.OPENAI_WHISPER_MODEL || "whisper-1";
+      // 1. Whisper STT (uses per-connection model from client config, or env default)
+      const whisperModel = connSttModel;
       let transcript: string;
       try {
         // VAD sends WAV, legacy client may send webm — Whisper accepts both

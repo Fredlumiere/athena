@@ -3,10 +3,13 @@
 import { useCallback, useRef, useState } from "react";
 import type { VoiceProviderCallbacks, VoiceProviderHandle, VoiceProviderStatus } from "./types";
 
+export type STTModel = "whisper-1" | "gpt-4o-mini-transcribe";
+
 export function useOpenAIProvider(
   callbacks: VoiceProviderCallbacks,
   bridgeUrl: string,
-  bridgeToken: string = ""
+  bridgeToken: string = "",
+  sttModel: STTModel = "whisper-1"
 ): VoiceProviderHandle {
   const [status, setStatus] = useState<VoiceProviderStatus>("disconnected");
   const [isSpeaking, setIsSpeakingState] = useState(false);
@@ -14,24 +17,29 @@ export function useOpenAIProvider(
   const cbRef = useRef(callbacks);
   cbRef.current = callbacks;
 
+  const sttModelRef = useRef(sttModel);
+  sttModelRef.current = sttModel;
+
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const vadRef = useRef<{ destroy: () => Promise<void> } | null>(null);
+  const vadRef = useRef<{ start: () => void; pause: () => void; destroy: () => void } | null>(null);
   const playQueueRef = useRef<ArrayBuffer[]>([]);
   const isPlayingRef = useRef(false);
   const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const isConnectedRef = useRef(false);
+  const isTTSPlayingRef = useRef(false); // Track TTS state for barge-in
 
   // ─── Audio Playback ─────────────────────────────────────────────────────
 
   const playNextChunk = useCallback(async () => {
     if (isPlayingRef.current || playQueueRef.current.length === 0) return;
     isPlayingRef.current = true;
+    isTTSPlayingRef.current = true;
 
     const ctx = audioContextRef.current;
     if (!ctx || ctx.state === "closed") {
       isPlayingRef.current = false;
+      isTTSPlayingRef.current = false;
       return;
     }
 
@@ -68,6 +76,7 @@ export function useOpenAIProvider(
     }
 
     isPlayingRef.current = false;
+    isTTSPlayingRef.current = false;
     setIsSpeakingState(false);
     cbRef.current.onSpeakingChange(false);
   }, []);
@@ -75,8 +84,8 @@ export function useOpenAIProvider(
   const stopPlayback = useCallback(() => {
     playQueueRef.current = [];
     isPlayingRef.current = false;
+    isTTSPlayingRef.current = false;
 
-    // Stop currently playing audio immediately
     if (currentSourceRef.current) {
       try { currentSourceRef.current.stop(); } catch { /* already stopped */ }
       currentSourceRef.current = null;
@@ -93,57 +102,29 @@ export function useOpenAIProvider(
     cbRef.current.onStatusChange("connecting");
 
     try {
-      // Request mic
       const dbg = cbRef.current.debug;
-      dbg.log("Requesting microphone...");
-      cbRef.current.onMessage({ role: "event", text: "Requesting microphone..." });
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch (micErr) {
-        const name = micErr instanceof Error ? micErr.name : "";
-        const msg = micErr instanceof Error ? micErr.message : String(micErr);
-        const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
-        dbg.error(`Mic request failed: ${name} — ${msg} (iOS=${isIOS})`);
-        if (name === "NotAllowedError" || name === "PermissionDeniedError") {
-          cbRef.current.onError(
-            isIOS
-              ? "Mic blocked. Check: Settings → Safari → Microphone. Also: Settings → Privacy → Microphone → Safari."
-              : "Mic permission denied. Allow microphone access and try again."
-          );
-        } else if (name === "NotFoundError") {
-          cbRef.current.onError("No microphone found on this device.");
-        } else if (name === "NotReadableError") {
-          cbRef.current.onError("Microphone in use by another app. Close other apps and retry.");
-        } else {
-          cbRef.current.onError(`Mic error: ${msg}`);
-        }
+
+      // Check getUserMedia support
+      if (!navigator.mediaDevices?.getUserMedia) {
+        dbg.error("getUserMedia not supported — mic access unavailable");
+        cbRef.current.onError("Microphone not supported in this browser.");
         setStatus("disconnected");
         cbRef.current.onStatusChange("disconnected");
         return;
       }
-      streamRef.current = stream;
-      const tracks = stream.getAudioTracks();
-      const trackInfo = `${tracks.length} track, ${tracks[0]?.enabled ? "enabled" : "disabled"}, ${tracks[0]?.label || "no label"}`;
-      dbg.success(`Mic ready: ${trackInfo}`);
-      cbRef.current.onMessage({ role: "event", text: `Mic ready (${tracks.length} track, ${tracks[0]?.enabled ? "enabled" : "disabled"})` });
 
-      // Create AudioContext for playback — must resume on iOS Safari
+      // Create AudioContext for playback
+      cbRef.current.onMessage({ role: "event", text: "Setting up audio..." });
       const ctx = new AudioContext({ sampleRate: 24000 });
-      dbg.log(`AudioContext created: state=${ctx.state}, sampleRate=${ctx.sampleRate}`);
-      if (ctx.state === "suspended") {
-        dbg.log("AudioContext suspended, resuming...");
-        await ctx.resume();
-      }
+      if (ctx.state === "suspended") await ctx.resume();
       audioContextRef.current = ctx;
       dbg.success(`AudioContext: ${ctx.state}, ${ctx.sampleRate}Hz`);
-      cbRef.current.onMessage({ role: "event", text: `Audio: ${ctx.state}, ${ctx.sampleRate}Hz` });
 
-      // Connect WebSocket with auth token
+      // Connect WebSocket
       const wsBase = bridgeUrl.replace(/^http/, "ws") + "/ws/voice";
       const wsUrl = bridgeToken ? `${wsBase}?token=${encodeURIComponent(bridgeToken)}` : wsBase;
       dbg.log(`WebSocket: connecting to ${wsBase}`);
-      cbRef.current.onMessage({ role: "event", text: `Connecting to bridge...` });
+      cbRef.current.onMessage({ role: "event", text: "Connecting to bridge..." });
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -152,66 +133,80 @@ export function useOpenAIProvider(
         cbRef.current.onStatusChange("connected");
         isConnectedRef.current = true;
         dbg.success("WebSocket connected");
-        cbRef.current.onMessage({ role: "event", text: "WebSocket connected. Loading VAD..." });
 
-        // Initialize VAD after WebSocket is ready
+        // Send STT model config
+        ws.send(JSON.stringify({ type: "config", sttModel: sttModelRef.current }));
+
+        // Initialize MicVAD for voice activity detection + Whisper STT
+        dbg.log("Initializing VAD (Silero + ONNX Runtime)...");
+        cbRef.current.onMessage({ role: "event", text: "Loading voice detection..." });
+
         try {
-          dbg.log("Importing @ricky0123/vad-web...");
-          const { MicVAD } = await import("@ricky0123/vad-web");
-          dbg.log("MicVAD imported. Initializing with baseAssetPath=/");
+          const vadModule = await import("@ricky0123/vad-web");
+          const MicVAD = vadModule.MicVAD;
+          const encodeWAV = vadModule.utils.encodeWAV;
+
           const vad = await MicVAD.new({
-            // Serve VAD assets from public/ directory at root
             baseAssetPath: "/",
             onnxWASMBasePath: "/",
-            // Force single-threaded WASM — mobile Safari lacks SharedArrayBuffer
-            ortConfig: (ort) => {
-              ort.env.wasm.numThreads = 1;
-              dbg.log("ONNX: configured numThreads=1");
+            // iOS Safari: single-threaded WASM required
+            ortConfig: (ort: Record<string, unknown>) => {
+              const env = ort.env as Record<string, unknown>;
+              const wasm = env.wasm as Record<string, unknown>;
+              wasm.numThreads = 1;
             },
-            getStream: async () => stream,
-            positiveSpeechThreshold: 0.6,
-            negativeSpeechThreshold: 0.3,
-            minSpeechMs: 200,
-            preSpeechPadMs: 500,
-            redemptionMs: 800,
             onSpeechStart: () => {
               dbg.log("Speech detected");
-              cbRef.current.onMessage({ role: "event", text: "Speech detected..." });
-            },
-            onSpeechEnd: (audio: Float32Array) => {
-              if (!isConnectedRef.current) return;
-              if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-
-              // If Athena is speaking, this is a barge-in — interrupt her
-              if (isPlayingRef.current) {
+              cbRef.current.onMessage({ role: "event", text: "Listening..." });
+              // Barge-in: if TTS is playing, stop it
+              if (isTTSPlayingRef.current) {
+                dbg.log("Barge-in: stopping TTS playback");
                 stopPlayback();
-                if (wsRef.current.readyState === WebSocket.OPEN) {
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
                   wsRef.current.send(JSON.stringify({ type: "interrupt" }));
                 }
               }
+            },
+            onSpeechEnd: (audio: Float32Array) => {
+              dbg.log(`Speech ended (${(audio.length / 16000).toFixed(1)}s)`);
 
-              // Convert Float32 audio to WAV for Whisper
-              const wavBuffer = float32ToWav(audio, 16000);
-              const base64 = arrayBufferToBase64(wavBuffer);
+              // Ignore very short audio (< 0.5s) — probably noise
+              if (audio.length < 8000) {
+                dbg.warn("Audio too short (<0.5s), ignoring");
+                return;
+              }
+
+              // Show interim "Transcribing..." while Whisper processes
+              cbRef.current.onMessage({ role: "interim", text: "Transcribing..." });
+
+              // Encode to WAV and send to bridge for Whisper transcription
+              const wavBuffer = encodeWAV(audio);
+              const wavBytes = new Uint8Array(wavBuffer);
 
               if (wsRef.current?.readyState === WebSocket.OPEN) {
-                wsRef.current.send(JSON.stringify({ type: "audio", data: base64 }));
-                wsRef.current.send(JSON.stringify({ type: "recording_end" }));
+                // Send as binary frame — bridge detects WAV by RIFF header
+                wsRef.current.send(wavBytes);
+                // Signal end of audio
+                wsRef.current.send(JSON.stringify({ type: "audio_end" }));
                 cbRef.current.onThinkingChange(true);
+                dbg.log(`Sent ${(wavBytes.length / 1024).toFixed(0)}KB WAV to bridge`);
+              } else {
+                dbg.error(`Cannot send — WS not open (state=${wsRef.current?.readyState})`);
               }
             },
+            onVADMisfire: () => {
+              dbg.log("VAD misfire (speech too short)");
+            },
           });
+
           vadRef.current = vad;
           vad.start();
-          dbg.success("VAD initialized and listening");
-          cbRef.current.onMessage({ role: "event", text: "VAD ready — speak now!" });
+          dbg.success("VAD started — speak now!");
+          cbRef.current.onMessage({ role: "event", text: "Ready — speak now!" });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          const stack = err instanceof Error ? err.stack : "";
           dbg.error(`VAD init failed: ${msg}`);
-          if (stack) dbg.error(`Stack: ${stack.slice(0, 300)}`);
-          console.error("[OpenAI] VAD init error:", err);
-          cbRef.current.onError(`VAD failed: ${msg}`);
+          cbRef.current.onError(`Voice detection failed: ${msg}`);
         }
       };
 
@@ -229,8 +224,9 @@ export function useOpenAIProvider(
               cbRef.current.onThinkingChange(true);
               cbRef.current.onMessage({ role: "user", text: msg.text as string });
             } else {
-              // Empty transcript — reset thinking state
+              // Empty transcript — Whisper couldn't understand
               cbRef.current.onThinkingChange(false);
+              cbRef.current.onMessage({ role: "event", text: "Couldn't catch that. Try again." });
             }
             break;
 
@@ -252,7 +248,6 @@ export function useOpenAIProvider(
           }
 
           case "tts_end":
-            // Server finished sending TTS audio
             break;
 
           case "error":
@@ -263,13 +258,13 @@ export function useOpenAIProvider(
       };
 
       ws.onclose = (ev) => {
-        dbg.warn(`WebSocket closed: code=${ev.code} reason=${ev.reason || "none"} clean=${ev.wasClean}`);
+        dbg.warn(`WebSocket closed: code=${ev.code} reason=${ev.reason || "none"}`);
         if (isConnectedRef.current) {
           isConnectedRef.current = false;
           cbRef.current.onMessage({ role: "event", text: "Connection lost. Reconnecting..." });
           setStatus("connecting");
           cbRef.current.onStatusChange("connecting");
-          cleanup();
+          destroyVAD();
           setTimeout(() => {
             if (!isConnectedRef.current && wsRef.current === null) {
               dbg.log("Attempting reconnect...");
@@ -279,7 +274,7 @@ export function useOpenAIProvider(
         } else {
           setStatus("disconnected");
           cbRef.current.onStatusChange("disconnected");
-          cleanup();
+          destroyVAD();
         }
       };
 
@@ -292,26 +287,23 @@ export function useOpenAIProvider(
       cbRef.current.onError(msg);
       setStatus("disconnected");
       cbRef.current.onStatusChange("disconnected");
-      cleanup();
+      destroyVAD();
     }
   }, [bridgeUrl, bridgeToken, playNextChunk, stopPlayback]);
 
   // ─── Cleanup ────────────────────────────────────────────────────────────
 
-  const cleanup = useCallback(async () => {
+  const destroyVAD = useCallback(() => {
     if (vadRef.current) {
-      await vadRef.current.destroy();
+      try { vadRef.current.destroy(); } catch { /* ignore */ }
       vadRef.current = null;
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
     }
   }, []);
 
   const disconnect = useCallback(async () => {
     isConnectedRef.current = false;
     stopPlayback();
+    destroyVAD();
 
     if (wsRef.current) {
       if (wsRef.current.readyState === WebSocket.OPEN) {
@@ -320,8 +312,6 @@ export function useOpenAIProvider(
       wsRef.current.close();
       wsRef.current = null;
     }
-
-    cleanup();
 
     if (audioContextRef.current) {
       await audioContextRef.current.close();
@@ -332,59 +322,7 @@ export function useOpenAIProvider(
     cbRef.current.onStatusChange("disconnected");
     cbRef.current.onSpeakingChange(false);
     cbRef.current.onThinkingChange(false);
-  }, [stopPlayback, cleanup]);
+  }, [stopPlayback, destroyVAD]);
 
   return { connect, disconnect, status, isSpeaking };
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function float32ToWav(float32: Float32Array, sampleRate: number): ArrayBuffer {
-  const numChannels = 1;
-  const bitsPerSample = 16;
-  const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
-  const blockAlign = numChannels * (bitsPerSample / 8);
-  const dataSize = float32.length * (bitsPerSample / 8);
-  const buffer = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buffer);
-
-  // WAV header
-  writeString(view, 0, "RIFF");
-  view.setUint32(4, 36 + dataSize, true);
-  writeString(view, 8, "WAVE");
-  writeString(view, 12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM
-  view.setUint16(22, numChannels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, byteRate, true);
-  view.setUint16(32, blockAlign, true);
-  view.setUint16(34, bitsPerSample, true);
-  writeString(view, 36, "data");
-  view.setUint32(40, dataSize, true);
-
-  // Convert float32 to int16
-  let offset = 44;
-  for (let i = 0; i < float32.length; i++) {
-    const s = Math.max(-1, Math.min(1, float32[i]));
-    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    offset += 2;
-  }
-
-  return buffer;
-}
-
-function writeString(view: DataView, offset: number, str: string) {
-  for (let i = 0; i < str.length; i++) {
-    view.setUint8(offset + i, str.charCodeAt(i));
-  }
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
 }
