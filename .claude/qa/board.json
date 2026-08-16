@@ -1,0 +1,62 @@
+{
+ "product": "athena",
+ "group": "lumiere",
+ "stamp": "seeded 2026-08-16 · nothing tested yet",
+ "running": false,
+ "issueBaseUrl": "https://github.com/Fredlumiere/athena/issues/",
+ "issuesHeading": "Issues",
+ "lastCommit": "d78a4cd2090bcf66cd2f46f4e3b3236fc18b7b42",
+ "areas": [
+  {
+   "name": "A · Pages",
+   "tests": [
+    [
+     "/ loads",
+     "pending",
+     "route exists in the app router, never opened"
+    ]
+   ]
+  },
+  {
+   "name": "B · API routes",
+   "tests": [
+    [
+     "/api/auth: serves the right caller and refuses the wrong one",
+     "pending",
+     "handler exists. Allow AND deny paths are two different tests"
+    ],
+    [
+     "/api/bridge/select: serves the right caller and refuses the wrong one",
+     "pending",
+     "handler exists. Allow AND deny paths are two different tests"
+    ],
+    [
+     "/api/bridge/sessions: serves the right caller and refuses the wrong one",
+     "pending",
+     "handler exists. Allow AND deny paths are two different tests"
+    ],
+    [
+     "/api/signed-url: serves the right caller and refuses the wrong one",
+     "pending",
+     "handler exists. Allow AND deny paths are two different tests"
+    ],
+    [
+     "/api/tts-config: serves the right caller and refuses the wrong one",
+     "pending",
+     "handler exists. Allow AND deny paths are two different tests"
+    ]
+   ]
+  }
+ ],
+ "issues": [],
+ "log": [
+  [
+   "2026-08-16",
+   "Board created by /qa-board init. Every row is pending: seeded from what exists in the repo, never from anything that was tested."
+  ],
+  [
+   "2026-08-16",
+   "Seeding read: Next.js app router (src/app)."
+  ]
+ ]
+}

@@ -1,0 +1,101 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "QA board",
+  "description": "One product's QA status. Lives at .claude/qa/board.json, rendered by ~/.claude/skills/qa-board/render.mjs.",
+  "type": "object",
+  "required": ["product", "areas"],
+  "properties": {
+    "product": {
+      "type": "string",
+      "description": "Product name, shown as '<product> QA Run' in the title and gallery."
+    },
+    "group": {
+      "type": "string",
+      "description": "Which portfolio group this product belongs to, e.g. 'apiant' or 'lumiere'. Required for any board listed in a portfolio. Groups must never mix: portfolio.mjs hard-fails if a board's group does not match the portfolio being built, rather than skipping it, because a silently absent product looks identical to a product with nothing to report.",
+      "minLength": 1
+    },
+    "stamp": {
+      "type": "string",
+      "description": "Run identity and freshness, e.g. 'run 001 · 2026-08-16 · fix wave 3 verified'. Shown next to the title."
+    },
+    "running": {
+      "type": "boolean",
+      "description": "True while a run is executing. Drives the live pulse and the 90s auto-refresh. The page also treats any 'testing' row as live, so this is for the gap between starting a run and marking the first row."
+    },
+    "runningLabel": {
+      "type": "string",
+      "description": "What is being worked right now, e.g. 'area E, viewer'. Shown in the live chip."
+    },
+    "refreshSeconds": {
+      "type": "integer",
+      "description": "Auto-refresh interval while running. Default 90.",
+      "minimum": 15
+    },
+    "staleAfterMinutes": {
+      "type": "integer",
+      "description": "How long a live run may go without a republish before the page declares it stalled, drops the animation and stops auto-refreshing. Default 15.",
+      "minimum": 2
+    },
+    "issueBaseUrl": {
+      "type": "string",
+      "description": "Prefix an issue number is appended to, e.g. 'https://github.com/owner/repo/issues/'."
+    },
+    "issuesHeading": {
+      "type": "string",
+      "description": "Heading over the issues table. Default 'Issues'."
+    },
+    "lastCommit": {
+      "type": "string",
+      "description": "Commit the board was last reconciled against. discover.mjs diffs from here to find changed code whose rows may now be stale."
+    },
+    "areas": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "tests"],
+        "properties": {
+          "name": { "type": "string", "description": "Area heading, e.g. 'E · Demo viewer'." },
+          "tests": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "description": "[name, status, note]. name is what a user can do; note is the evidence.",
+              "items": [
+                { "type": "string" },
+                { "type": "string", "enum": ["pass", "fail", "blocked", "pending", "testing"] },
+                { "type": "string", "description": "Evidence. Inline HTML allowed, so issue links work." }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "description": "[number, title, status]",
+        "items": [
+          { "type": "string" },
+          { "type": "string" },
+          { "type": "string", "enum": ["open", "fixed"] }
+        ]
+      }
+    },
+    "log": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "description": "[time, message]. Newest last in the file, rendered newest first.",
+        "items": [{ "type": "string" }, { "type": "string" }]
+      }
+    }
+  }
+}
