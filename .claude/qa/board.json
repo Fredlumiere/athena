@@ -58,5 +58,10 @@
    "2026-08-16",
    "Seeding read: Next.js app router (src/app)."
   ]
- ]
+ ],
+ "coverage": {
+  "items": [],
+  "at": "2026-08-16T13:46Z",
+  "scannedTo": "c29dcb57b9f3f91d461bf4a6cb84973ae36ae759"
+ }
 }
